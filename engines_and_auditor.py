@@ -853,6 +853,18 @@ class RealBrowserFormAutoFiller:
                     notes=f"تم تعبئة {filled_count} حقلاً بالكامل والتوقف عند حاجز {inspection.captcha_type} لتأكيده بضغطة واحدة.",
                 )
 
+            if filled_count == 0:
+                return BrowserSubmissionReceipt(
+                    status="READY_FOR_SUBMISSION",
+                    confirmation_reference="",
+                    confirmation_page_text="",
+                    pre_submit_screenshot_path=str(pre_shot_path),
+                    post_submit_screenshot_path="",
+                    filled_dom_fields_count=0,
+                    uploaded_files_count=0,
+                    notes="تم فتح الرابط الحقيقي عبر المتصفح: الصفحة عبارة عن مقال إخباري أو بوابة تعريفية لا تحتوي على حقول استمارة تفاعلية مباشرة. تم تجهيز طرد التقديم كاملاً (السيرة الذاتية وخطاب الدافع) بانتظار التقديم المباشر.",
+                )
+
             post_shot_path = self.screenshots_dir / f"{opportunity_code}_submitted.png"
             confirmation_text = ""
             confirmation_ref = ""
@@ -1519,7 +1531,7 @@ class AutonomousApplicantEngine:
         post_shot = ""
         notes = ""
 
-        if apply_url.startswith("file://"):
+        try:
             receipt = self.browser_filler.fill_and_submit_application(
                 opportunity_code=opp_code,
                 apply_url=apply_url,
@@ -1534,16 +1546,20 @@ class AutonomousApplicantEngine:
             filled_payload["pre_submit_screenshot"] = pre_shot
             filled_payload["post_submit_screenshot"] = post_shot
             filled_payload["confirmation_page_text"] = receipt.confirmation_page_text
-        else:
-            digest = hashlib.sha256(
-                f"{opp_code}|{apply_url}|{filled_payload.get('email_address', '')}".encode("utf-8")
-            ).hexdigest()[:10].upper()
-            confirmation_ref = f"SUB-{opp_code}-{digest}"
+
+            if receipt.status == "APPLIED_AUTOMATICALLY" and confirmation_ref:
+                final_status = OpportunityStatus.APPLIED_AUTOMATICALLY
+            else:
+                final_status = OpportunityStatus.VERIFIED_ELIGIBLE
+        except Exception as exc:
+            logger.warning("Browser automation attempt failed for %s: %s", opp_code, exc)
+            final_status = OpportunityStatus.VERIFIED_ELIGIBLE
+            notes = f"تعذر استكمال التقديم التلقائي عبر المتصفح: {exc}. طرد التقديم مجهز بالكامل."
 
         self.db.record_application_attempt(
             opportunity_id=opp_id,
             opportunity_code=opp_code,
-            new_status=OpportunityStatus.APPLIED_AUTOMATICALLY,
+            new_status=final_status,
             filled_payload=filled_payload,
             missing_fields=[],
             confirmation_ref=confirmation_ref,
@@ -1551,7 +1567,7 @@ class AutonomousApplicantEngine:
         return {
             "opportunity_code": opp_code,
             "title": opp["title"],
-            "application_status": OpportunityStatus.APPLIED_AUTOMATICALLY,
+            "application_status": final_status,
             "filled_fields_count": len(filled_payload),
             "missing_fields": [],
             "confirmation_ref": confirmation_ref,
