@@ -119,11 +119,14 @@ def start_service(svc_key: str, svc_info: Dict[str, Any], state: Dict[str, Any])
     log_path = svc_info["log_file"]
     log_fd = open(log_path, "a", encoding="utf-8")
 
+    env_vars = {**os.environ, "PYTHONUNBUFFERED": "1"}
+
     proc = subprocess.Popen(
         svc_info["command"],
         stdout=log_fd,
         stderr=subprocess.STDOUT,
         cwd=str(BASE_DIR),
+        env=env_vars,
         start_new_session=True,
     )
 

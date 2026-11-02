@@ -550,14 +550,22 @@ def main() -> None:
     if args.daemon_auditor:
         import time
         interval_sec = max(60.0, args.interval_hours * 3600.0)
-        print(f"Starting 6-Hour Periodic Opportunity Auditor Daemon (interval: {args.interval_hours}h)...")
+        print(f"[{dt.datetime.now(dt.timezone.utc).isoformat()}] Starting 6-Hour Periodic Opportunity Auditor Daemon (interval: {args.interval_hours}h)...", flush=True)
         while True:
             try:
-                print(f"[{dt.datetime.now(dt.timezone.utc).isoformat()}] Running periodic batch audit...")
+                print(f"[{dt.datetime.now(dt.timezone.utc).isoformat()}] Running periodic batch audit...", flush=True)
                 summary = controller.run_six_hour_batch_audit(window_hours=args.interval_hours, auto_apply=True)
-                print(f"Batch audit completed. Audited: {summary.get('batch_size_audited', 0)}, Verified: {len(summary.get('verified_eligible_codes', []))}")
+                verified_count = len(summary.get("verified_eligible_codes", []))
+                audited_count = summary.get("batch_size_audited", 0)
+                applied_count = len(summary.get("applied_codes", []))
+                paused_count = len(summary.get("paused_codes", []))
+                print(
+                    f"[{dt.datetime.now(dt.timezone.utc).isoformat()}] Batch audit completed. "
+                    f"Audited: {audited_count} | Eligible: {verified_count} | Auto-applied: {applied_count} | Paused for inputs: {paused_count}",
+                    flush=True,
+                )
             except Exception as exc:
-                print(f"Error in batch audit daemon loop: {exc}")
+                print(f"[{dt.datetime.now(dt.timezone.utc).isoformat()}] Error in batch audit daemon loop: {exc}", flush=True)
             time.sleep(interval_sec)
         return
 
