@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>FRIM & AI Malaysia — Green-AI Rainforest Hackathon 2027 Application Portal</title>
+  <style>
+    body { font-family: sans-serif; background: #f4f7f6; color: #1a2e26; margin: 24px; }
+    .card { max-width: 820px; margin: 0 auto; background: #fff; padding: 28px; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); border-top: 6px solid #0f766e; }
+    h1 { font-size: 22px; color: #0f766e; margin-top: 0; }
+    .badge { display: inline-block; background: #d1fae5; color: #065f46; padding: 4px 10px; border-radius: 6px; font-size: 13px; font-weight: bold; margin-bottom: 16px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .field { margin-bottom: 12px; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+    input, select, textarea { width: 100%; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; box-sizing: border-box; }
+    textarea { height: 90px; }
+    button { background: #0f766e; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-size: 15px; font-weight: bold; cursor: pointer; margin-top: 12px; }
+    #confirmation-banner { display: none; background: #ecfdf5; border: 2px solid #10b981; padding: 18px; border-radius: 10px; margin-top: 18px; color: #065f46; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <span class="badge">100% FULLY FUNDED ($0 APPLICATION FEE • HOTEL + MEALS + TRANSPORT COVERED)</span>
+    <h1>Malaysia Green-AI & Smart Rainforest Monitoring Hackathon 2027</h1>
+    <p>Open to undergraduate Bachelor's students studying Artificial Intelligence or Computer Science at Malaysian universities (including UTM).</p>
+    <form id="app-form" onsubmit="event.preventDefault(); document.getElementById('confirmation-banner').style.display='block'; document.getElementById('submit-btn').innerText='Application Submitted ✓';">
+      <div class="grid">
+        <div class="field">
+          <label for="full_name">Full Name (as in Passport)</label>
+          <input type="text" id="full_name" name="full_name" required />
+        </div>
+        <div class="field">
+          <label for="email_address">Official University Email</label>
+          <input type="email" id="email_address" name="email_address" required />
+        </div>
+        <div class="field">
+          <label for="phone_whatsapp_my">Malaysia Phone / WhatsApp</label>
+          <input type="tel" id="phone_whatsapp_my" name="phone_whatsapp_my" required />
+        </div>
+        <div class="field">
+          <label for="nationality">Nationality</label>
+          <input type="text" id="nationality" name="nationality" required />
+        </div>
+        <div class="field">
+          <label for="university_name">Current Malaysian University</label>
+          <input type="text" id="university_name" name="university_name" required />
+        </div>
+        <div class="field">
+          <label for="degree_and_major">Degree & Major</label>
+          <input type="text" id="degree_and_major" name="degree_and_major" required />
+        </div>
+        <div class="field">
+          <label for="current_cgpa">Current CGPA / Academic Standing</label>
+          <input type="text" id="current_cgpa" name="current_cgpa" required />
+        </div>
+        <div class="field">
+          <label for="github_or_portfolio_url">GitHub / AI Portfolio URL</label>
+          <input type="url" id="github_or_portfolio_url" name="github_or_portfolio_url" required />
+        </div>
+      </div>
+      <div class="field">
+        <label for="motivation">Motivation Statement (How will you apply AI to rainforest conservation?)</label>
+        <textarea id="motivation" name="motivation" required></textarea>
+      </div>
+      <div class="field">
+        <label><input type="checkbox" id="agree_terms" name="agree_terms" style="width:auto;" required /> I confirm that this program is 100% free of charge and requires $0 fee.</label>
+      </div>
+      <button type="submit" id="submit-btn">Submit Official Application</button>
+    </form>
+    <div id="confirmation-banner">
+      OFFICIAL CONFIRMATION RECEIPT: REF-FRIM-GAI-2027-8841 — Your fully funded application for Mohammad Mahdi (Universiti Teknologi Malaysia - UTM) has been received!
+    </div>
+  </div>
+</body>
+</html>

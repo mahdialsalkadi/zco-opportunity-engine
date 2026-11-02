@@ -1,0 +1,14 @@
+{
+  "name": "zco-opportunity-engine",
+  "version": "3.0.0",
+  "description": "24/7 Background Opportunity Crawler + 6-Hour Zero-Cost Auditor + Self-Learning Memory Vault & Autonomous Applicant for Mohammad Mahdi",
+  "author": "Mohammad Mahdi",
+  "mcp": "mcp.json",
+  "skills": [
+    ".agents/skills/zco-hunter"
+  ],
+  "sidecars": [
+    "sidecars/crawler-daemon",
+    "sidecars/six-hour-auditor"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "six-hour-auditor",
+  "description": "Wakes up the Antigravity Agent every 6 hours (0 */6 * * *) to audit newly queued opportunities, auto-apply using the Memory Vault, and ask once for any newly encountered fields",
+  "command": "schedule",
+  "args": [
+    "0 */6 * * *",
+    "agentapi",
+    "new-conversation",
+    "Run /zco-hunter in 6-hour batch audit & auto-apply mode: execute run_six_hour_batch_audit(window_hours=6.0). Automatically submit applications for all verified 100% zero-cost opportunities where all required fields exist in CandidateMemoryVault. If any new form fields are missing from the Vault, list the consolidated questions for Mohammad Mahdi so that once answered, they are saved forever and all paused applications are immediately submitted."
+  ],
+  "restartPolicy": "always"
+}

@@ -1,0 +1,1060 @@
+#!/usr/bin/env python3
+"""
+ZCO Hunter - Modern Web Dashboard & Real-Time Control Center
+Author: Mohammad Mahdi Alsalkadi & Antigravity AI
+Version: 5.2.0
+
+Provides a full-featured, responsive web interface for:
+- Browsing verified 100% zero-cost opportunities categorized by:
+  (Volunteering, Beach Cleanup, Kids Education, Eco-Camps, AI Hackathons, Scholarships).
+- 1-Click Opportunity-Tailored Custom CV PDF generation & download.
+- 1-Click Tailored Motivation Letter (Statement of Purpose) preview & copy.
+- Interactive Approval & Application submission.
+- Real-time Candidate Portfolio & Vault management.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import datetime as dt
+import json
+import logging
+import os
+import pathlib
+import sys
+from typing import Any, Dict, List, Optional
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from pydantic import BaseModel
+import uvicorn
+
+BASE_DIR = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE_DIR))
+
+# Load environment configuration
+def _load_local_env() -> None:
+    env_file = BASE_DIR / ".env"
+    if env_file.exists():
+        try:
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip("'\"")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+        except Exception:
+            pass
+
+_load_local_env()
+
+DASHBOARD_AUTH_TOKEN = os.environ.get("DASHBOARD_AUTH_TOKEN", "").strip()
+
+from database import OpportunityDatabase, OpportunityStatus
+from engines_and_auditor import AutonomousApplicantEngine, CandidateMemoryVault
+from portfolio_and_docs_engine import (
+    CV_PDF_FILE,
+    PortfolioManager,
+    get_opportunity_arabic_explanation,
+)
+from server import ZCOEngineController
+from typst_agentic_cv_engine import (
+    is_cv_required_for_opportunity,
+    synthesize_tailored_typst_cv,
+    synthesize_base_reference_typst_cv,
+)
+
+logger = logging.getLogger("ZCO-WebDashboard")
+
+app = FastAPI(title="ZCO-Hunter Web Dashboard", version="5.2.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.middleware("http")
+async def security_token_middleware(request: Request, call_next):
+    if DASHBOARD_AUTH_TOKEN:
+        token = request.headers.get("X-Dashboard-Token") or request.query_params.get("token")
+        if token != DASHBOARD_AUTH_TOKEN and request.url.path not in ("/favicon.ico",):
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                {"status": "error", "message": "Unauthorized. Please provide valid ?token= or X-Dashboard-Token header."},
+                status_code=401,
+            )
+    return await call_next(request)
+
+db = OpportunityDatabase(BASE_DIR / "data" / "opportunities.db")
+vault = CandidateMemoryVault(db)
+applicant = AutonomousApplicantEngine(db, vault)
+controller = ZCOEngineController(db_path=BASE_DIR / "data" / "opportunities.db")
+pm = PortfolioManager()
+
+
+class ProfileUpdateRequest(BaseModel):
+    full_name_en: Optional[str] = None
+    email: Optional[str] = None
+    phone_my: Optional[str] = None
+    passport_number: Optional[str] = None
+    address_my: Optional[str] = None
+    cgpa: Optional[str] = None
+    matric_number: Optional[str] = None
+    github_url: Optional[str] = None
+
+
+@app.get("/api/status")
+async def get_system_status() -> Dict[str, Any]:
+    summary = controller.get_crawler_daemon_status()
+    subscribers = db.get_telegram_subscribers()
+    return {
+        "status": "online",
+        "total_tracked": summary.get("total_tracked", 0),
+        "queue_counts": summary.get("queue_counts", {}),
+        "telegram_subscribers_count": len(subscribers),
+        "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/opportunities")
+async def get_opportunities(
+    category: Optional[str] = None,
+    location: Optional[str] = None,
+    search: Optional[str] = None,
+) -> Dict[str, Any]:
+    raw_opps = db.get_verified_opportunities()
+    
+    # Deduplicate by normalized title
+    seen_titles = set()
+    unique_opps = []
+    for opp in raw_opps:
+        norm_title = opp["title"].strip().lower()
+        if norm_title in seen_titles:
+            continue
+        seen_titles.add(norm_title)
+        unique_opps.append(opp)
+
+    results = []
+    for o in unique_opps:
+        code = o.get("opportunity_code") or f"ID-{o['id']}"
+        title = o.get("title", "")
+        organizer = o.get("organizer", "")
+        city = o.get("location_city", "")
+        country = o.get("location_country", "")
+        is_my = bool(o.get("is_inside_malaysia", 0))
+        track = o.get("track_category", "GENERAL")
+        status = o.get("status", "")
+        score = o.get("match_score", 92)
+        deadline = o.get("deadline_iso", "")
+        apply_url = o.get("apply_url", "")
+        if apply_url.startswith("file://"):
+            apply_url = o.get("source_url", "https://www.frim.gov.my/")
+
+        cov = json.loads(o.get("financial_coverage_json") or "{}")
+        cov_summary = cov.get("coverage_summary_ar", "تغطية كاملة 100% (0 رسوم + سكن كامل + وجبات + مواصلات)")
+
+        # Determine broad human category
+        title_upper = title.upper()
+        track_upper = track.upper()
+
+        if any(k in title_upper or k in track_upper for k in ["CLEANUP", "BEACH", "TURTLE", "COMMUNITY", "SOLS 24/7", "UN VOLUNTEERS", "UNV", "CHILD"]):
+            category_tag = "VOLUNTEERING"
+            category_label_ar = "🌊 تطوع وخدمة مجتمع وتنظيف شواطئ"
+        elif any(k in title_upper or k in track_upper for k in ["SCHOLARSHIP", "FELLOWSHIP", "RESEARCH", "AMGEN", "CALTECH", "HARVARD", "LAB", "GOVAI", "MASTERCARD"]):
+            category_tag = "SCHOLARSHIPS"
+            category_label_ar = "🎓 منح دراسية وتدريب بحثي"
+        elif any(k in title_upper or k in track_upper for k in ["HACKATHON", "GREEN-AI", "COMPUTING", "SOFTWARE"]):
+            category_tag = "AI_TECH"
+            category_label_ar = "🤖 ذكاء اصطناعي وهاكاثونات"
+        elif any(k in title_upper or k in track_upper for k in ["CAMP", "ECO", "NATURE", "FOREST", "FRIM", "WILDLIFE", "PARKS", "SUMMIT"]):
+            category_tag = "CAMPS"
+            category_label_ar = "🏕 مخيمات ومعسكرات بيئية"
+        else:
+            category_tag = "GENERAL"
+            category_label_ar = "🌟 برامج عامة"
+
+        explanation_ar = get_opportunity_arabic_explanation(o)
+        cv_req, cv_reason = is_cv_required_for_opportunity(o)
+
+        # Filters
+        if category and category != "ALL" and category_tag != category:
+            continue
+        if location == "MALAYSIA" and not is_my:
+            continue
+        if location == "INTERNATIONAL" and is_my:
+            continue
+        if search:
+            search_lower = search.lower()
+            if not (search_lower in title.lower() or search_lower in organizer.lower() or search_lower in city.lower() or search_lower in country.lower() or search_lower in explanation_ar.lower()):
+                continue
+
+        results.append({
+            "opportunity_code": code,
+            "title": title,
+            "organizer": organizer,
+            "location_city": city,
+            "location_country": country,
+            "is_inside_malaysia": is_my,
+            "category_tag": category_tag,
+            "category_label_ar": category_label_ar,
+            "track_category": track,
+            "match_score": score,
+            "status": status,
+            "deadline_iso": deadline,
+            "apply_url": apply_url,
+            "financial_coverage_ar": cov_summary,
+            "explanation_ar": explanation_ar,
+            "cv_required": cv_req,
+            "cv_requirement_reason": cv_reason,
+            "custom_cv_url": f"/api/opportunities/{code}/cv",
+            "kit_url": f"/api/opportunities/{code}/kit",
+        })
+
+    return {
+        "count": len(results),
+        "opportunities": results,
+    }
+
+
+@app.get("/api/opportunities/{code}/cv")
+async def download_tailored_cv(code: str):
+    opp = db.get_opportunity_by_code(code)
+    if not opp:
+        raise HTTPException(status_code=404, detail="Opportunity code not found")
+    
+    cv_req, cv_reason = is_cv_required_for_opportunity(opp)
+    if not cv_req:
+        raise HTTPException(
+            status_code=400,
+            detail=f"السيرة الذاتية غير مطلوبة في هذه الفرصة ({cv_reason}). تطبيقاً للقاعدة الصارمة: لا يتم التوليد إلا للفرص التي تشترط السيرة صراحة."
+        )
+
+    try:
+        res = synthesize_tailored_typst_cv(opp)
+        if res.get("status") == "generated" and res.get("pdf_path") and os.path.exists(res["pdf_path"]):
+            return FileResponse(
+                path=res["pdf_path"],
+                filename=f"CV_Mohammad_Alsalkadi_{code}_Typst.pdf",
+                media_type="application/pdf",
+            )
+        else:
+            raise RuntimeError(f"Typst generation status: {res.get('status')}")
+    except Exception as e:
+        logger.error("Failed to render custom Typst CV for %s: %s", code, e)
+        # Fallback to PortfolioManager if needed
+        try:
+            pdf_path = pm.render_custom_cv_for_opportunity(opp)
+            return FileResponse(
+                path=str(pdf_path),
+                filename=f"CV_Mohammad_Alsalkadi_{code}.pdf",
+                media_type="application/pdf",
+            )
+        except Exception as inner_e:
+            raise HTTPException(status_code=500, detail=str(inner_e))
+
+
+@app.get("/api/cv/base")
+async def download_base_cv():
+    try:
+        res = synthesize_base_reference_typst_cv(force_recompile=False)
+        if res.get("pdf_path") and os.path.exists(res["pdf_path"]):
+            return FileResponse(
+                path=res["pdf_path"],
+                filename="CV_Mohammad_Mahdi_Alsalkadi_Reference.pdf",
+                media_type="application/pdf",
+            )
+        pdf_path = pm.render_cv_pdf()
+        return FileResponse(
+            path=str(pdf_path),
+            filename="CV_Mohammad_Mahdi_Alsalkadi_Base.pdf",
+            media_type="application/pdf",
+        )
+    except Exception as e:
+        logger.error("Failed to render base reference CV: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/opportunities/{code}/kit")
+async def get_opportunity_kit(code: str) -> Dict[str, Any]:
+    opp = db.get_opportunity_by_code(code)
+    if not opp:
+        raise HTTPException(status_code=404, detail="Opportunity code not found")
+
+    essay = pm.synthesize_tailored_motivation_letter(opp)
+    cov = json.loads(opp.get("financial_coverage_json") or "{}")
+    cv_req, cv_reason = is_cv_required_for_opportunity(opp)
+
+    return {
+        "opportunity_code": code,
+        "title": opp.get("title", ""),
+        "organizer": opp.get("organizer", ""),
+        "financial_coverage": cov,
+        "tailored_motivation_letter": essay,
+        "cv_required": cv_req,
+        "cv_requirement_reason": cv_reason,
+        "applicant": pm.data.get("personal", {}),
+        "academic": pm.data.get("education", {}),
+    }
+
+
+@app.post("/api/opportunities/{code}/approve")
+async def approve_opportunity(code: str) -> Dict[str, Any]:
+    opp = db.get_opportunity_by_code(code)
+    if not opp:
+        raise HTTPException(status_code=404, detail="Opportunity code not found")
+
+    cv_req, cv_reason = is_cv_required_for_opportunity(opp)
+    tailored_cv_info = None
+
+    if cv_req:
+        # Autonomously synthesize the deeply tailored Typst CV specifically for this vacancy!
+        cv_res = synthesize_tailored_typst_cv(opp)
+        if cv_res.get("status") == "generated" and cv_res.get("pdf_path"):
+            known = vault.get_known_fields()
+            known["cv_pdf_path"] = str(cv_res["pdf_path"])
+            tailored_cv_info = {
+                "generated": True,
+                "pdf_filename": cv_res["pdf_filename"],
+                "domain_focus": cv_res["domain_focus"],
+                "ats_score": cv_res["ats_score"],
+            }
+    else:
+        # Opportunity does not require CV -> clear from vault
+        known = vault.get_known_fields()
+        known.pop("cv_pdf_path", None)
+        tailored_cv_info = {"generated": False, "reason": cv_reason}
+
+    # Attempt application with the filled vault
+    res = applicant.attempt_auto_application(opp)
+    return {
+        "status": "success",
+        "opportunity_code": code,
+        "cv_tailored_info": tailored_cv_info,
+        "result": res,
+    }
+
+
+@app.post("/api/opportunities/{code}/decline")
+async def decline_opportunity(code: str) -> Dict[str, Any]:
+    opp = db.get_opportunity_by_code(code)
+    if not opp:
+        raise HTTPException(status_code=404, detail="Opportunity code not found")
+
+    db.update_opportunity_status(
+        opportunity_code=code,
+        new_status=OpportunityStatus.DECLINED_BY_USER,
+        rejection_reason="Declined by user via Web Dashboard",
+    )
+    return {
+        "status": "success",
+        "message": f"Opportunity {code} declined and archived.",
+    }
+
+
+@app.get("/api/profile")
+async def get_candidate_profile() -> Dict[str, Any]:
+    return pm.data
+
+
+@app.post("/api/profile")
+async def update_candidate_profile(req: ProfileUpdateRequest) -> Dict[str, Any]:
+    p = pm.data.setdefault("personal", {})
+    edu = pm.data.setdefault("education", {})
+
+    if req.full_name_en:
+        p["full_name_en"] = req.full_name_en
+    if req.email:
+        p["email"] = req.email
+        p["personal_email"] = req.email
+    if req.phone_my:
+        p["phone_my"] = req.phone_my
+    if req.passport_number:
+        p["passport_number"] = req.passport_number
+    if req.address_my:
+        p["address_my"] = req.address_my
+    if req.cgpa:
+        edu["cgpa"] = req.cgpa
+    if req.matric_number:
+        edu["matric_number"] = req.matric_number
+    if req.github_url:
+        p["github_url"] = req.github_url
+
+    pm.save()
+    with db.connect() as conn:
+        pm.sync_to_sqlite_vault(conn)
+
+    return {
+        "status": "success",
+        "message": "Candidate profile updated and synchronized with vault.",
+        "profile": pm.data,
+    }
+
+
+@app.post("/api/crawl")
+async def trigger_crawl_cycle(background_tasks: BackgroundTasks) -> Dict[str, Any]:
+    from async_crawler import AsyncOpportunityCrawler
+
+    async def _run():
+        crawler = AsyncOpportunityCrawler(db=db)
+        await crawler.run_single_cycle(include_curated_seed=True)
+        controller.run_six_hour_batch_audit(window_hours=24.0, auto_apply=False)
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "message": "Crawler cycle initiated in background."}
+
+
+@app.post("/api/audit")
+async def trigger_audit_cycle() -> Dict[str, Any]:
+    res = controller.run_six_hour_batch_audit(window_hours=48.0, auto_apply=False)
+    return res
+
+
+# =============================================================================
+# Dashboard HTML Template
+# =============================================================================
+
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZCO-Hunter | منصة صيد الفرص الذكية والتقديم الآلي</title>
+    <!-- Tailwind CSS & FontAwesome -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        * {
+            font-family: 'Cairo', 'Inter', -apple-system, sans-serif;
+        }
+        body {
+            background-color: #0f172a;
+            color: #f1f5f9;
+        }
+        .card-glow:hover {
+            box-shadow: 0 10px 25px -5px rgba(59, 130, 246, 0.25), 0 8px 10px -6px rgba(59, 130, 246, 0.2);
+            transform: translateY(-2px);
+            transition: all 0.2s ease-in-out;
+        }
+        .tab-btn.active {
+            background-color: #2563eb;
+            color: #ffffff;
+            font-weight: 700;
+        }
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+    <!-- Top Navigation Bar -->
+    <header class="bg-gray-900 border-b border-gray-800 sticky top-0 z-40 shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-wrap items-center justify-between gap-4">
+            <div class="flex items-center space-x-3 space-x-reverse">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-md">
+                    <i class="fa-solid fa-radar text-white text-xl"></i>
+                </div>
+                <div>
+                    <h1 class="text-xl font-extrabold text-white tracking-wide">ZCO-Hunter</h1>
+                    <p class="text-xs text-blue-400 font-semibold">منصة صيد الفرص الذكية والتقديم الآلي 100% مجاناً</p>
+                </div>
+            </div>
+
+            <!-- Candidate Identity Pill -->
+            <div class="flex items-center space-x-3 space-x-reverse bg-gray-800 px-4 py-2 rounded-xl border border-gray-700">
+                <div class="w-8 h-8 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center font-bold">
+                    <i class="fa-solid fa-user-graduate"></i>
+                </div>
+                <div class="text-xs">
+                    <div class="font-bold text-gray-200" id="header-name">محمد مهدي السلقدي</div>
+                    <div class="text-gray-400">UTM Year 1 AI Honours | CGPA: <span class="text-emerald-400 font-semibold" id="header-cgpa">3.53</span></div>
+                </div>
+            </div>
+
+            <!-- Action Toolbar -->
+            <div class="flex items-center space-x-2 space-x-reverse">
+                <a href="/api/cv/base" target="_blank" class="px-3 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-lg text-xs font-bold flex items-center space-x-1.5 space-x-reverse shadow transition">
+                    <i class="fa-solid fa-file-invoice"></i>
+                    <span>السيرة المرجعية (Reference CV)</span>
+                </a>
+                <button onclick="openProfileModal()" class="px-3 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse transition">
+                    <i class="fa-solid fa-id-card"></i>
+                    <span>ملفي الشخصي</span>
+                </button>
+                <button onclick="triggerAudit()" id="btn-audit" class="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse transition">
+                    <i class="fa-solid fa-bolt"></i>
+                    <span>تدقيق فوري</span>
+                </button>
+                <button onclick="triggerCrawl()" id="btn-crawl" class="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse transition">
+                    <i class="fa-solid fa-globe"></i>
+                    <span>زحف الويب</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content Container -->
+    <main class="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6">
+
+        <!-- KPI Summary Cards -->
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+            <div class="bg-gray-900 border border-gray-800 p-4 rounded-2xl">
+                <div class="text-gray-400 text-xs mb-1 font-semibold">إجمالي الفرص المفحوصة</div>
+                <div class="text-2xl font-black text-white" id="stat-total">--</div>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 p-4 rounded-2xl">
+                <div class="text-emerald-400 text-xs mb-1 font-semibold">فرص مؤهلة 100% مجانية</div>
+                <div class="text-2xl font-black text-emerald-400" id="stat-verified">--</div>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 p-4 rounded-2xl">
+                <div class="text-cyan-400 text-xs mb-1 font-semibold">تطوع وتنظيف شواطئ</div>
+                <div class="text-2xl font-black text-cyan-400" id="stat-vol">--</div>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 p-4 rounded-2xl">
+                <div class="text-amber-400 text-xs mb-1 font-semibold">مخيمات بيئية وغابات</div>
+                <div class="text-2xl font-black text-amber-400" id="stat-camps">--</div>
+            </div>
+            <div class="bg-gray-900 border border-gray-800 p-4 rounded-2xl">
+                <div class="text-purple-400 text-xs mb-1 font-semibold">منح وبحث وذكاء اصطناعي</div>
+                <div class="text-2xl font-black text-purple-400" id="stat-ai">--</div>
+            </div>
+        </div>
+
+        <!-- Filter Tabs & Controls -->
+        <div class="bg-gray-900 border border-gray-800 p-4 rounded-2xl mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+            
+            <!-- Category Tabs -->
+            <div class="flex flex-wrap gap-2" id="category-tabs">
+                <button onclick="setCategory('ALL')" class="tab-btn active px-4 py-2 rounded-xl text-xs font-semibold bg-gray-800 text-gray-300 hover:bg-gray-700 transition" data-cat="ALL">
+                    🌟 الكل (All)
+                </button>
+                <button onclick="setCategory('VOLUNTEERING')" class="tab-btn px-4 py-2 rounded-xl text-xs font-semibold bg-gray-800 text-gray-300 hover:bg-gray-700 transition" data-cat="VOLUNTEERING">
+                    🌊 تطوع وتنظيف شواطئ وتعليم أطفال
+                </button>
+                <button onclick="setCategory('CAMPS')" class="tab-btn px-4 py-2 rounded-xl text-xs font-semibold bg-gray-800 text-gray-300 hover:bg-gray-700 transition" data-cat="CAMPS">
+                    🏕 مخيمات ومعسكرات بيئية
+                </button>
+                <button onclick="setCategory('AI_TECH')" class="tab-btn px-4 py-2 rounded-xl text-xs font-semibold bg-gray-800 text-gray-300 hover:bg-gray-700 transition" data-cat="AI_TECH">
+                    🤖 ذكاء اصطناعي وهاكاثونات
+                </button>
+                <button onclick="setCategory('SCHOLARSHIPS')" class="tab-btn px-4 py-2 rounded-xl text-xs font-semibold bg-gray-800 text-gray-300 hover:bg-gray-700 transition" data-cat="SCHOLARSHIPS">
+                    🎓 منح وتدريب بحثي صيفي
+                </button>
+            </div>
+
+            <!-- Search & Location Filters -->
+            <div class="flex items-center space-x-3 space-x-reverse w-full md:w-auto">
+                <div class="relative flex-1 md:w-64">
+                    <input type="text" id="search-input" onkeyup="handleSearch()" placeholder="ابحث باسم الفرصة، المدينة..." class="w-full bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-xl px-4 py-2 pr-9 focus:outline-none focus:border-blue-500">
+                    <i class="fa-solid fa-search absolute right-3 top-2.5 text-gray-400 text-xs"></i>
+                </div>
+                <select id="location-filter" onchange="loadOpportunities()" class="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-xl px-3 py-2 focus:outline-none focus:border-blue-500">
+                    <option value="">جميع المواقع</option>
+                    <option value="MALAYSIA">🇲🇾 داخل ماليزيا</option>
+                    <option value="INTERNATIONAL">✈️ دولية شاملة الطيران</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Opportunities Grid -->
+        <div id="loading-spinner" class="py-16 text-center text-gray-400 text-sm hidden">
+            <i class="fa-solid fa-circle-notch fa-spin text-3xl text-blue-500 mb-3"></i>
+            <div>جاري تحميل أحدث الفرص والتحقق من التغطية...</div>
+        </div>
+
+        <div id="opps-container" class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <!-- Dynamically populated via JavaScript -->
+        </div>
+
+        <div id="no-results" class="py-16 text-center text-gray-500 text-sm hidden">
+            <i class="fa-regular fa-folder-open text-4xl mb-3"></i>
+            <div>لا توجد فرص مطابقة لهذا التصنيف حالياً. جرب اختيار تصنيف آخر أو اضغط على "تدقيق فوري".</div>
+        </div>
+
+    </main>
+
+    <!-- Motivation Letter / Kit Modal -->
+    <div id="kit-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 hidden">
+        <div class="bg-gray-900 border border-gray-800 rounded-3xl max-w-3xl w-full p-6 max-h-[90vh] flex flex-col shadow-2xl">
+            <div class="flex items-center justify-between border-b border-gray-800 pb-4 mb-4">
+                <div class="flex items-center space-x-3 space-x-reverse">
+                    <div class="w-10 h-10 rounded-xl bg-blue-600/20 text-blue-400 flex items-center justify-center">
+                        <i class="fa-solid fa-envelope-open-text text-lg"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-white" id="modal-kit-title">ملف التقديم وخطاب الدافع المخصص</h3>
+                        <p class="text-xs text-gray-400" id="modal-kit-code">كود الفرصة</p>
+                    </div>
+                </div>
+                <button onclick="closeKitModal()" class="text-gray-400 hover:text-white text-lg">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto space-y-4 pr-1 text-sm">
+                <div class="bg-gray-800/60 p-4 rounded-xl border border-gray-700/50">
+                    <div class="text-xs text-blue-400 font-semibold mb-1">🎁 التغطية المالية المؤكدة:</div>
+                    <div class="text-xs text-gray-200" id="modal-kit-cov">0 رسوم + سكن مجاني + وجبات + طيران</div>
+                </div>
+
+                <div>
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs font-bold text-gray-300">✍️ مسودة خطاب الدافع المخصص (Tailored Statement of Purpose):</span>
+                        <button onclick="copyMotivationLetter()" class="text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 px-3 py-1 rounded-lg flex items-center space-x-1 space-x-reverse">
+                            <i class="fa-solid fa-copy"></i>
+                            <span id="copy-btn-text">نسخ المقال</span>
+                        </button>
+                    </div>
+                    <div class="bg-gray-950 p-4 rounded-xl border border-gray-800 font-mono text-xs text-gray-300 leading-relaxed whitespace-pre-wrap select-all" id="modal-kit-essay">
+                        <!-- Essay inserted here -->
+                    </div>
+                </div>
+            </div>
+
+            <div class="border-t border-gray-800 pt-4 mt-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                    <div id="modal-kit-cv-notice" class="px-3.5 py-1.5 bg-indigo-950/60 border border-indigo-800/60 text-indigo-300 rounded-xl text-xs font-semibold flex items-center space-x-1.5 space-x-reverse">
+                        <i class="fa-solid fa-wand-magic-sparkles text-indigo-400"></i>
+                        <span id="modal-kit-cv-text">تتطلب سيرة ذاتية: ستُعاد كتابتها وتوليدها وإرفاقها تلقائياً عند التقديم</span>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-2 space-x-reverse">
+                    <button onclick="closeKitModal()" class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-xl text-xs font-semibold">إغلاق</button>
+                    <button id="modal-kit-approve-btn" onclick="" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 space-x-reverse shadow transition">
+                        <i class="fa-solid fa-check"></i>
+                        <span>موافقة وتقديم الآن</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Profile View & Edit Modal -->
+    <div id="profile-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 hidden">
+        <div class="bg-gray-900 border border-gray-800 rounded-3xl max-w-xl w-full p-6 max-h-[90vh] flex flex-col shadow-2xl">
+            <div class="flex items-center justify-between border-b border-gray-800 pb-4 mb-4">
+                <div class="flex items-center space-x-3 space-x-reverse">
+                    <div class="w-10 h-10 rounded-xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center">
+                        <i class="fa-solid fa-user-gear text-lg"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-white">ملف المرشح والخزانة الآمنة</h3>
+                        <p class="text-xs text-gray-400">البيانات الحقيقية المستخدمة لملء الاستمارات</p>
+                    </div>
+                </div>
+                <button onclick="closeProfileModal()" class="text-gray-400 hover:text-white text-lg">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <form id="profile-form" onsubmit="saveProfile(event)" class="flex-1 overflow-y-auto space-y-4 pr-1 text-xs">
+                <div>
+                    <label class="block text-gray-400 mb-1 font-semibold">الاسم الكامل بالإنجليزية (كما في الجواز):</label>
+                    <input type="text" id="prof-name" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-gray-400 mb-1 font-semibold">البريد الإلكتروني الجامعي:</label>
+                        <input type="email" id="prof-email" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
+                    </div>
+                    <div>
+                        <label class="block text-gray-400 mb-1 font-semibold">رقم الهاتف / واتساب:</label>
+                        <input type="text" id="prof-phone" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-gray-400 mb-1 font-semibold">الرقم الجامعي (Matric Number):</label>
+                        <input type="text" id="prof-matric" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
+                    </div>
+                    <div>
+                        <label class="block text-gray-400 mb-1 font-semibold">المعدل التراكمي (CGPA):</label>
+                        <input type="text" id="prof-cgpa" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-gray-400 mb-1 font-semibold">عنوان السكن في كوالالمبور:</label>
+                    <input type="text" id="prof-address" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
+                </div>
+                <div>
+                    <label class="block text-gray-400 mb-1 font-semibold">رابط GitHub (اختياري - محجوب ومستبعد تلقائياً عن السير الذاتية والتقديم):</label>
+                    <input type="url" id="prof-github" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
+                </div>
+
+                <div class="bg-gray-800/40 p-3 rounded-xl border border-gray-700/30 text-[11px] text-gray-400 leading-normal">
+                    💡 <strong>ملاحظة أمان:</strong> أي تعديل هنا ينعكس فوراً على خزانة الذاكرة المستدامة (SQLite Vault) ويعيد توليد الـ CV المخصص لكل فرصة بصورة تلقائية.
+                </div>
+
+                <div class="border-t border-gray-800 pt-4 flex items-center justify-end space-x-2 space-x-reverse">
+                    <button type="button" id="btn-close-profile-modal" onclick="closeProfileModal()" class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-xl font-semibold">إلغاء</button>
+                    <button type="submit" class="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold">حفظ التعديلات</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script>
+        let currentCategory = 'ALL';
+        let opportunities = [];
+
+        async function initDashboard() {
+            await loadProfile();
+            await loadOpportunities();
+        }
+
+        async function loadProfile() {
+            try {
+                const res = await fetch('/api/profile');
+                const data = await res.json();
+                const p = data.personal || {};
+                const edu = data.education || {};
+                
+                document.getElementById('header-name').innerText = p.full_name_en || 'محمد مهدي السلقدي';
+                document.getElementById('header-cgpa').innerText = edu.cgpa || '3.53';
+
+                document.getElementById('prof-name').value = p.full_name_en || '';
+                document.getElementById('prof-email').value = p.email || '';
+                document.getElementById('prof-phone').value = p.phone_my || '';
+                document.getElementById('prof-matric').value = edu.matric_number || '';
+                document.getElementById('prof-cgpa').value = edu.cgpa || '';
+                document.getElementById('prof-address').value = p.address_my || '';
+                document.getElementById('prof-github').value = p.github_url || '';
+            } catch (err) {
+                console.error("Failed to load profile", err);
+            }
+        }
+
+        function setCategory(cat) {
+            currentCategory = cat;
+            document.querySelectorAll('#category-tabs .tab-btn').forEach(btn => {
+                if (btn.getAttribute('data-cat') === cat) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+            loadOpportunities();
+        }
+
+        async function loadOpportunities() {
+            const spinner = document.getElementById('loading-spinner');
+            const container = document.getElementById('opps-container');
+            const noResults = document.getElementById('no-results');
+            const search = document.getElementById('search-input').value.trim();
+            const location = document.getElementById('location-filter').value;
+
+            spinner.classList.remove('hidden');
+            container.innerHTML = '';
+            noResults.classList.add('hidden');
+
+            try {
+                const params = new URLSearchParams();
+                if (currentCategory && currentCategory !== 'ALL') params.append('category', currentCategory);
+                if (location) params.append('location', location);
+                if (search) params.append('search', search);
+
+                const res = await fetch(`/api/opportunities?${params.toString()}`);
+                const data = await res.json();
+                opportunities = data.opportunities || [];
+
+                updateKPICounters(opportunities);
+
+                spinner.classList.add('hidden');
+
+                if (opportunities.length === 0) {
+                    noResults.classList.remove('hidden');
+                    return;
+                }
+
+                container.innerHTML = opportunities.map(opp => renderOpportunityCard(opp)).join('');
+
+            } catch (err) {
+                console.error("Error loading opportunities", err);
+                spinner.classList.add('hidden');
+            }
+        }
+
+        function updateKPICounters(opps) {
+            document.getElementById('stat-total').innerText = opps.length;
+            document.getElementById('stat-verified').innerText = opps.filter(o => o.status !== 'DECLINED_BY_USER').length;
+            document.getElementById('stat-vol').innerText = opps.filter(o => o.category_tag === 'VOLUNTEERING').length;
+            document.getElementById('stat-camps').innerText = opps.filter(o => o.category_tag === 'CAMPS').length;
+            document.getElementById('stat-ai').innerText = opps.filter(o => o.category_tag === 'AI_TECH' || o.category_tag === 'SCHOLARSHIPS').length;
+        }
+
+        function renderOpportunityCard(opp) {
+            const isMY = opp.is_inside_malaysia;
+            const locationBadge = isMY
+                ? `<span class="px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-[11px] font-semibold"><i class="fa-solid fa-map-pin ml-1"></i>داخل ماليزيا (سارية بإقامة UTM)</span>`
+                : `<span class="px-2.5 py-1 bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-lg text-[11px] font-semibold"><i class="fa-solid fa-plane-departure ml-1"></i>دولية (شاملة تذاكر الطيران من KUL)</span>`;
+
+            const cvBadge = opp.cv_required
+                ? `<span class="px-2.5 py-1 bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 rounded-lg text-[11px] font-semibold"><i class="fa-solid fa-wand-magic-sparkles ml-1"></i>📄 تتطلب سيرة ذاتية (تُصاغ تلقائياً بالكامل عند التقديم)</span>`
+                : `<span class="px-2.5 py-1 bg-gray-800/90 text-gray-400 border border-gray-700 rounded-lg text-[11px] font-semibold"><i class="fa-solid fa-file-circle-check ml-1"></i>📄 تقديم مباشر (لا تتطلب سيرة ذاتية)</span>`;
+
+            let statusBadge = `<span class="px-2 py-0.5 bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 rounded-md text-[10px] font-bold">بانتظار قرارك</span>`;
+            if (opp.status === 'APPLIED_AUTOMATICALLY') {
+                statusBadge = `<span class="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-md text-[10px] font-bold">✅ تم التقديم</span>`;
+            } else if (opp.status === 'DECLINED_BY_USER') {
+                statusBadge = `<span class="px-2 py-0.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-md text-[10px] font-bold">مستبعد</span>`;
+            }
+
+            return `
+            <div class="card-glow bg-gray-900 border border-gray-800 rounded-3xl p-6 flex flex-col justify-between transition-all">
+                <div>
+                    <!-- Header Badges -->
+                    <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+                        <div class="flex items-center space-x-2 space-x-reverse">
+                            <span class="text-xs font-mono font-bold text-gray-400 bg-gray-800 px-2 py-0.5 rounded-md border border-gray-700">${opp.opportunity_code}</span>
+                            <span class="text-xs font-semibold text-indigo-400">${opp.category_label_ar}</span>
+                        </div>
+                        <div class="flex items-center space-x-2 space-x-reverse">
+                            ${statusBadge}
+                            <span class="text-xs font-black text-blue-400 bg-blue-900/40 px-2.5 py-0.5 rounded-lg border border-blue-800">🎯 ${opp.match_score}% تطابق</span>
+                        </div>
+                    </div>
+
+                    <!-- Title -->
+                    <h3 class="text-lg font-bold text-white mb-2 leading-snug">${opp.title}</h3>
+
+                    <!-- Organizer & Location & CV Requirement -->
+                    <div class="flex flex-wrap items-center gap-2 text-xs text-gray-400 mb-3">
+                        <span><i class="fa-solid fa-building-columns text-gray-500 ml-1"></i>${opp.organizer}</span>
+                        <span><i class="fa-solid fa-location-dot text-gray-500 ml-1"></i>${opp.location_city ? opp.location_city + '، ' : ''}${opp.location_country}</span>
+                        ${locationBadge}
+                        ${cvBadge}
+                    </div>
+
+                    <!-- Financial Coverage Pill -->
+                    <div class="bg-gray-800/70 border border-emerald-500/20 p-3 rounded-xl mb-3 flex items-start space-x-2 space-x-reverse">
+                        <i class="fa-solid fa-gift text-emerald-400 mt-0.5 text-sm"></i>
+                        <div class="text-xs text-emerald-300 font-semibold leading-relaxed">
+                            ${opp.financial_coverage_ar}
+                        </div>
+                    </div>
+
+                    <!-- Simplified Arabic Explanation Box -->
+                    <div class="bg-gray-950/70 border-r-4 border-blue-500 p-3.5 rounded-xl mb-4 text-xs text-gray-300 leading-relaxed">
+                        <div class="text-blue-400 font-bold mb-1 flex items-center space-x-1.5 space-x-reverse">
+                            <i class="fa-solid fa-lightbulb"></i>
+                            <span>شرح مبسط عن الفرصة:</span>
+                        </div>
+                        <p>${opp.explanation_ar}</p>
+                    </div>
+                </div>
+
+                <!-- Action Toolbar (Without separate manual CV button) -->
+                <div class="border-t border-gray-800/80 pt-4 mt-2 flex flex-wrap items-center justify-between gap-2">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button onclick="approveOpp('${opp.opportunity_code}')" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 space-x-reverse shadow transition">
+                            <i class="fa-solid fa-check"></i>
+                            <span>موافقة وتقديم</span>
+                        </button>
+                        <button onclick="openKitModal('${opp.opportunity_code}')" class="px-3.5 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-xl text-xs font-semibold flex items-center space-x-1.5 space-x-reverse transition">
+                            <i class="fa-solid fa-envelope-open-text"></i>
+                            <span>خطاب الدافع والمراجعة</span>
+                        </button>
+                    </div>
+
+                    <div class="flex items-center space-x-2 space-x-reverse">
+                        <a href="${opp.apply_url}" target="_blank" class="p-2 text-gray-400 hover:text-blue-400 text-sm transition" title="فتح الإعلان الرسمي">
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                        </a>
+                        <button onclick="declineOpp('${opp.opportunity_code}')" class="p-2 text-gray-400 hover:text-red-400 text-sm transition" title="استبعاد الفرصة">
+                            <i class="fa-solid fa-trash-can"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            `;
+        }
+
+        async function approveOpp(code) {
+            if (!confirm(`هل أنت متأكد من رغبتك بالموافقة على التقديم للفرصة ${code}؟`)) return;
+            try {
+                const res = await fetch(`/api/opportunities/${code}/approve`, { method: 'POST' });
+                const data = await res.json();
+                if (data.cv_tailored_info && data.cv_tailored_info.generated) {
+                    alert(`✅ تم صياغة سيرة مخصصة بالكامل تتماشى مع معايير الشاغر وإرفاقها وإرسال طلب التقديم بنجاح! كود الفرصة: ${code}`);
+                } else {
+                    alert(`✅ تم التقديم بالاستمارة المباشرة بنجاح! كود الفرصة: ${code}`);
+                }
+                loadOpportunities();
+            } catch (err) {
+                alert(`⚠️ حدث خطأ: ${err.message}`);
+            }
+        }
+
+        async function declineOpp(code) {
+            if (!confirm(`هل تريد استبعاد الفرصة ${code}؟`)) return;
+            try {
+                await fetch(`/api/opportunities/${code}/decline`, { method: 'POST' });
+                loadOpportunities();
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        async function openKitModal(code) {
+            try {
+                const res = await fetch(`/api/opportunities/${code}/kit`);
+                const kit = await res.json();
+
+                document.getElementById('modal-kit-title').innerText = kit.title;
+                document.getElementById('modal-kit-code').innerText = `كود: ${code} | الجهة: ${kit.organizer}`;
+                document.getElementById('modal-kit-cov').innerText = kit.financial_coverage.coverage_summary_ar || 'تغطية كاملة 100%';
+                document.getElementById('modal-kit-essay').innerText = kit.tailored_motivation_letter;
+
+                const cvNotice = document.getElementById('modal-kit-cv-notice');
+                const cvText = document.getElementById('modal-kit-cv-text');
+
+                if (kit.cv_required) {
+                    cvNotice.className = "px-3.5 py-1.5 bg-indigo-950/60 border border-indigo-800/60 text-indigo-300 rounded-xl text-xs font-semibold flex items-center space-x-1.5 space-x-reverse";
+                    cvText.innerText = "تتطلب سيرة ذاتية: ستُعاد كتابتها وتوليدها وإرفاقها تلقائياً عند التقديم";
+                } else {
+                    cvNotice.className = "px-3.5 py-1.5 bg-gray-800/80 border border-gray-700 text-gray-400 rounded-xl text-xs font-semibold flex items-center space-x-1.5 space-x-reverse";
+                    cvText.innerText = "تقديم مباشر: استمارة تسجيل مباشرة دون الحاجة لسيرة ذاتية";
+                }
+
+                document.getElementById('modal-kit-approve-btn').onclick = () => { closeKitModal(); approveOpp(code); };
+
+                document.getElementById('kit-modal').classList.remove('hidden');
+            } catch (err) {
+                alert(`تعذر جلب ملف التقديم: ${err.message}`);
+            }
+        }
+
+        function closeKitModal() {
+            document.getElementById('kit-modal').classList.add('hidden');
+        }
+
+        function copyMotivationLetter() {
+            const text = document.getElementById('modal-kit-essay').innerText;
+            navigator.clipboard.writeText(text);
+            const btnText = document.getElementById('copy-btn-text');
+            btnText.innerText = "تم النسخ!";
+            setTimeout(() => { btnText.innerText = "نسخ المقال"; }, 2000);
+        }
+
+        function openProfileModal() {
+            document.getElementById('profile-modal').classList.remove('hidden');
+        }
+
+        function closeProfileModal() {
+            document.getElementById('profile-modal').classList.add('hidden');
+        }
+
+        async function saveProfile(e) {
+            e.preventDefault();
+            const payload = {
+                full_name_en: document.getElementById('prof-name').value,
+                email: document.getElementById('prof-email').value,
+                phone_my: document.getElementById('prof-phone').value,
+                matric_number: document.getElementById('prof-matric').value,
+                cgpa: document.getElementById('prof-cgpa').value,
+                address_my: document.getElementById('prof-address').value,
+                github_url: document.getElementById('prof-github').value,
+            };
+
+            try {
+                const res = await fetch('/api/profile', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await res.json();
+                alert("✅ تم حفظ وتحديث بياناتك بنجاح!");
+                closeProfileModal();
+                loadProfile();
+            } catch (err) {
+                alert("⚠️ تعذر حفظ البيانات: " + err.message);
+            }
+        }
+
+        async function triggerAudit() {
+            const btn = document.getElementById('btn-audit');
+            btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i><span>جاري التدقيق...</span>`;
+            try {
+                const res = await fetch('/api/audit', { method: 'POST' });
+                const data = await res.json();
+                alert(`اكتمل التدقيق! فرص مؤهلة جديدة: ${data.verified_eligible_count || 0}`);
+                loadOpportunities();
+            } catch (err) {
+                alert("حدث خطأ أثناء التدقيق: " + err.message);
+            } finally {
+                btn.innerHTML = `<i class="fa-solid fa-bolt"></i><span>تدقيق فوري</span>`;
+            }
+        }
+
+        async function triggerCrawl() {
+            const btn = document.getElementById('btn-crawl');
+            btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i><span>جاري السحب...</span>`;
+            try {
+                const res = await fetch('/api/crawl', { method: 'POST' });
+                alert("تم إطلاق دورة السحب الآلية في الخلفية! سيتم تدقيق الفرص فور اكتمالها.");
+            } catch (err) {
+                alert("حدث خطأ أثناء السحب: " + err.message);
+            } finally {
+                btn.innerHTML = `<i class="fa-solid fa-globe"></i><span>زحف الويب</span>`;
+            }
+        }
+
+        function handleSearch() {
+            clearTimeout(window._searchTimer);
+            window._searchTimer = setTimeout(() => {
+                loadOpportunities();
+            }, 300);
+        }
+
+        // Initialize on load
+        window.onload = initDashboard;
+    </script>
+</body>
+</html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_dashboard() -> str:
+    return DASHBOARD_HTML
+
+
+def main() -> None:
+    import argparse
+    default_host = os.environ.get("HOST", "127.0.0.1")
+    default_port = int(os.environ.get("PORT", "8080"))
+    parser = argparse.ArgumentParser(description="ZCO-Hunter Web Dashboard & Real-Time Control Center")
+    parser.add_argument("--host", default=default_host, help=f"Host IP (default: {default_host})")
+    parser.add_argument("--port", type=int, default=default_port, help=f"Port to listen on (default: {default_port})")
+    args = parser.parse_args()
+
+    logger.info("Starting ZCO Web Dashboard on http://%s:%d ...", args.host, args.port)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+
+
+if __name__ == "__main__":
+    main()

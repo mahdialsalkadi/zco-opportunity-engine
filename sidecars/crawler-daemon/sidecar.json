@@ -1,0 +1,12 @@
+{
+  "name": "crawler-daemon",
+  "description": "Runs async_crawler.py continuously in the background (24/7) to ingest opportunities across all 6 tracks into SQLite storage",
+  "command": "python3",
+  "args": [
+    "../../async_crawler.py",
+    "--daemon",
+    "--poll-interval-minutes",
+    "20"
+  ],
+  "restartPolicy": "always"
+}

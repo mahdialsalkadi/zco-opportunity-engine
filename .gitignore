@@ -1,0 +1,45 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environment, Secrets & Local Profile Data
+.env
+.env.local
+*.secret
+config/candidate_profile.json
+config/master_profile.yaml
+!config/*.example.*
+
+# SQLite Databases & Dynamic State
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/opportunities.db
+data/supervisor_state.json
+
+# Generated Documents, Custom CVs, Screenshots & Logs
+data/documents/*.pdf
+data/documents/custom_cvs/
+data/screenshots/*.png
+data/logs/*
+!data/logs/.gitkeep
+!data/documents/.gitkeep
+*.png
+
+# Virtual Environment & Tools
+.venv/
+venv/
+ENV/
+.pytest_cache/
+.coverage
+htmlcov/
+.cache/
+
+# IDE & OS Files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

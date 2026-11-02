@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "zco-opportunity-engine": {
+      "command": "python3",
+      "args": [
+        "server.py"
+      ],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}

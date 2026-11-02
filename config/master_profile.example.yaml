@@ -1,0 +1,141 @@
+# Master Candidate Profile Template (Single Source of Truth)
+# Copy this file to config/master_profile.yaml and customize with your own facts.
+# All information is strictly verified against real academic and personal facts.
+# The AI Agentic Pipeline is constrained to select and rewrite ONLY from this repository.
+
+personal:
+  full_name_en: "Candidate Full Name"
+  full_name_ar: "اسم المرشح الكامل"
+  email: "candidate@graduate.utm.my"
+  phone_my: "+60 11-0000 0000"
+  date_of_birth: "2006-01-01"
+  age: 20
+  nationality: "Syrian"
+  nationality_code: "SY"
+  residency_primary: "Malaysia (International Student Pass)"
+  residency_secondary: "Kuwait (Valid Residency / Iqama)"
+  current_residence: "Kuala Lumpur, Malaysia"
+  departure_hub: "KUL (Kuala Lumpur International Airport)"
+  github_url: "https://github.com/example-candidate"
+  linkedin_url: "https://linkedin.com/in/example"
+  dietary_preference: "Halal (حلال)"
+  apparel_size: "M (Medium)"
+  fitness_and_field:
+    swimming: "Capable Swimmer"
+    camping: "Passionate wilderness camper & outdoor trekker"
+    endurance: "High physical endurance for tropical field expeditions"
+
+education:
+  institution: "Universiti Teknologi Malaysia (UTM)"
+  institution_ar: "جامعة التكنولوجيا ماليزيا"
+  faculty: "Faculty of Computing"
+  degree: "Bachelor of Computer Science (Artificial Intelligence) with Honours"
+  degree_ar: "بكالوريوس علوم الحاسوب (الذكاء الاصطناعي) مع مرتبة الشرف"
+  academic_year: "Year 1 (Undergraduate)"
+  matric_number: "A00XX0000"
+  cgpa: "3.53 / 4.00"
+  graduation_expected: "2028"
+  english_proficiency: "IELTS Academic (Band 5.5)"
+  core_coursework:
+    - "Programming Fundamentals (Python, C++)"
+    - "Discrete Mathematical Structures"
+    - "Data Structures & Algorithmic Problem Solving"
+    - "Linear Algebra & Probability for Computing"
+    - "Artificial Intelligence Fundamentals & Logic"
+    - "Computer Architecture & Operating Systems"
+
+skills:
+  programming_languages:
+    - "Python (Foundational / Intermediate)"
+    - "C++ (Basic / Object-Oriented)"
+    - "SQL (Relational Queries)"
+    - "Bash / Linux Shell Scripting"
+  machine_learning:
+    - "PyTorch (Neural Network Architecture & Training)"
+    - "Convolutional Neural Networks (CNNs)"
+    - "Model Evaluation & Loss Function Optimization"
+    - "Tensor Manipulation & Pipeline Data Loaders"
+  developer_tools:
+    - "Git Version Control"
+    - "Linux CLI & Bash Environments"
+    - "Typst Typesetting System"
+    - "FastAPI & REST APIs"
+    - "VS Code & Remote SSH Development"
+  languages:
+    - language: "Arabic"
+      proficiency: "Native Speaker"
+    - language: "English"
+      proficiency: "Academic Working (IELTS Academic 5.5)"
+
+projects:
+  - id: "zco_hunter"
+    title: "Autonomous Opportunity Hunter & Application Assistant (ZCO-Hunter)"
+    category_tags:
+      - "AI_AGENT"
+      - "SYSTEMS"
+      - "AUTOMATION"
+      - "PYTHON"
+    role: "Lead Architect & Developer"
+    period: "2024 - Present"
+    technologies:
+      - "Python"
+      - "FastAPI"
+      - "Typst"
+      - "SQLite"
+      - "FastMCP"
+      - "Selenium"
+    raw_metrics:
+      - "Monitors 14+ international zero-cost opportunity portals 24/7"
+      - "Synthesizes vacancy-adapted ATS Typst CVs in <100ms"
+      - "Enforces 100% ground-truth verification across 4 distinct domains"
+    descriptions:
+      - "Engineered an autonomous agentic pipeline combining deterministic scrapers, FastMCP tools, and Typst programmatic rendering."
+      - "Implemented strict closed-loop verification guaranteeing 1-page layout compliance and candidate ground truth."
+
+  - id: "dl_pytorch_experiments"
+    title: "Deep Learning Foundations & Neural Optimization Experiments"
+    category_tags:
+      - "DEEP_LEARNING"
+      - "PYTORCH"
+      - "ALGORITHMS"
+      - "RESEARCH"
+    role: "Independent Experimenter"
+    period: "2024 - Present"
+    technologies:
+      - "Python"
+      - "PyTorch"
+      - "NumPy"
+      - "Matplotlib"
+    raw_metrics:
+      - "Trained custom CNNs on benchmark vision datasets achieving reproducible convergence"
+      - "Implemented gradient descent optimizations and custom loss functions"
+    descriptions:
+      - "Constructed end-to-end PyTorch training pipelines with modular dataset loaders and tensor transformations."
+      - "Analyzed loss landscapes and learning rate scheduling to improve generalizability on image classification tasks."
+
+experience:
+  - id: "utm_student_engagement"
+    organization: "Universiti Teknologi Malaysia (Faculty of Computing)"
+    role: "Undergraduate AI & Computer Science Student"
+    period: "2024 - Present"
+    location: "Kuala Lumpur, Malaysia"
+    category_tags:
+      - "ACADEMIC"
+      - "LEADERSHIP"
+      - "COMMUNITY"
+    details:
+      - "Active member of academic computing study circles focusing on algorithmic complexity and data structures."
+      - "Collaborated with international peers on coding projects and technical presentations in multicultural teams."
+
+  - id: "outdoor_field_activities"
+    organization: "Youth Outdoor Expeditions & Nature Conservation"
+    role: "Field Participant & Expedition Camper"
+    period: "Ongoing"
+    location: "Malaysia"
+    category_tags:
+      - "OUTDOOR"
+      - "SWIMMING"
+      - "VOLUNTEERING"
+    details:
+      - "Demonstrated physical resilience in tropical outdoor treks and wilderness camping environments."
+      - "Proficient swimmer with strong stamina for remote coastal and marine field initiatives."

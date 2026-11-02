@@ -1,0 +1,8 @@
+{
+  "bot_token": "",
+  "bot_username": "Uiii007bot",
+  "bot_name": "تطوع",
+  "admin_chat_ids": [],
+  "auto_broadcast_new_eligible": true,
+  "poll_interval_seconds": 15
+}

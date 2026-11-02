@@ -1,0 +1,60 @@
+{
+  "candidate": {
+    "full_name": "Candidate Full Name",
+    "age": 20,
+    "birth_year": 2006,
+    "email": "candidate@graduate.utm.my",
+    "phone": "+60 11-0000 0000",
+    "passport_number": "N00000000",
+    "matric_number": "A00XX0000",
+    "cgpa": "3.53 / 4.00",
+    "github": "",
+    "address": "Kuala Lumpur, Malaysia"
+  },
+  "jurisdictions": {
+    "nationality": {
+      "country_code": "SY",
+      "country_name": "Syria",
+      "eligible_regions": [
+        "MENA",
+        "Middle East",
+        "Arab States",
+        "Developing Countries",
+        "Global South",
+        "MEDA",
+        "Mediterranean Partner Countries"
+      ]
+    },
+    "primary_academic_residency": {
+      "country_code": "MY",
+      "country_name": "Malaysia",
+      "status": "International Student (Valid Malaysia Student Pass)",
+      "university": "Universiti Teknologi Malaysia (UTM)",
+      "departure_hub": "KUL (Kuala Lumpur / Johor Bahru)",
+      "eligible_scopes": [
+        "Inside Malaysia (Domestic)",
+        "Borneo / Sabah / Sarawak Field Camps",
+        "ASEAN-Hosted Open to Residents",
+        "Malaysian University Undergraduate Tracks"
+      ]
+    },
+    "secondary_legal_residency": {
+      "country_code": "KW",
+      "country_name": "Kuwait",
+      "status": "Valid Residency Permit (Iqama)",
+      "eligible_scopes": [
+        "GCC Residents Youth Tracks",
+        "Arab Youth Center Initiatives",
+        "Kuwait Foundations"
+      ]
+    }
+  },
+  "supported_tracks": [
+    "NATURE_ECO_CONSERVATION",
+    "GREEN_AI_CLIMATE_TECH",
+    "CORE_AI_HACKATHONS",
+    "OUTDOOR_LEADERSHIP_CAMPS",
+    "COMMUNITY_VOLUNTEERING_EXCHANGE",
+    "MENA_GCC_ASEAN_SPECIAL"
+  ]
+}
