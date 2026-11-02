@@ -33,6 +33,7 @@ import datetime as dt
 import hashlib
 import io
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -295,18 +296,19 @@ DEFAULT_REQUIRED_FIELDS_BY_TRACK: Dict[str, List[str]] = {
 
 
 DOM_ATTRIBUTE_TO_VAULT_KEY_RULES: List[Tuple[str, List[str]]] = [
-    ("full_name", ["full_name", "fullname", "applicant_name", "your name", "name as in passport", "first and last name", "الاسم الكامل"]),
+    ("full_name", ["full_name", "fullname", "full name", "candidate_name", "candidate", "applicant_name", "your name", "name as in passport", "first and last name", "الاسم الكامل"]),
     ("email_address", ["email", "e-mail", "mail", "البريد الإلكتروني"]),
     ("phone_whatsapp_my", ["phone", "mobile", "whatsapp", "contact_number", "telephone", "رقم الهاتف"]),
     ("age", ["age", "your age", "العمر"]),
     ("nationality", ["nationality", "citizenship", "passport_country", "country of citizenship", "الجنسية"]),
     ("primary_residency_country", ["country_of_residence", "current_country", "residency", "living_in", "بلد الإقامة"]),
     ("secondary_residency_country", ["secondary_residency", "gcc_residency", "other_residency", "إقامة ثانية"]),
-    ("university_name", ["university", "institution", "college", "school_name", "الجامعة"]),
-    ("degree_and_major", ["major", "field_of_study", "degree", "program_of_study", "department", "التخصص"]),
-    ("academic_year", ["year_of_study", "academic_year", "study_year", "current_year", "السنة الدراسية"]),
     ("utm_matric_number", ["matric", "student_id", "matric_number", "enrollment_number", "الرقم الجامعي"]),
     ("current_cgpa", ["cgpa", "gpa", "grade_point", "academic_score", "المعدل"]),
+    ("academic_year", ["year_of_study", "academic_year", "study_year", "current_year", "السنة الدراسية"]),
+    ("degree_and_major", ["major", "field_of_study", "degree", "program_of_study", "department", "التخصص"]),
+    ("university_name", ["university", "institution", "college", "school_name", "الجامعة"]),
+    ("tailored_motivation_essay", ["why do you want", "why apply", "motivation", "statement_of_purpose", "essay", "cover_letter", "رسالة الدافع"]),
     ("github_or_portfolio_url", ["github", "github_url", "github_profile"]),
     ("departure_airport", ["airport", "departure_city", "departure_hub", "nearest_airport", "مطار المغادرة"]),
     ("passport_number", ["passport_no", "passport_number", "passport_id", "رقم جواز السفر"]),
@@ -475,22 +477,87 @@ class DeepPageAndPdfInspector:
         discovered_fields: List[DiscoveredFormField] = []
         required_vault_keys: List[str] = []
 
-        for control in soup.find_all(["input", "textarea", "select"]):
+        # Collect standard form controls as well as ARIA / SPA form widgets (Google Forms, MS Forms, Typeform, Airtable)
+        all_controls = soup.find_all(
+            lambda t: t.name in ["input", "textarea", "select"]
+            or t.get("role") in ["radio", "checkbox", "textbox"]
+        )
+
+        for control in all_controls:
             tag_name = control.name.lower()
-            input_type = (control.get("type") or ("text" if tag_name == "input" else tag_name)).lower()
+            role_attr = (control.get("role") or "").lower()
+            input_type = (
+                control.get("type")
+                or role_attr
+                or ("text" if tag_name == "input" else tag_name)
+            ).lower()
             if input_type in ("hidden", "submit", "button", "reset", "image"):
                 continue
 
             dom_name = (control.get("name") or "").strip()
             dom_id = (control.get("id") or "").strip()
             placeholder = (control.get("placeholder") or "").strip()
-            is_required = control.has_attr("required") or (control.get("aria-required") == "true")
+            is_required = control.has_attr("required") or (
+                control.get("aria-required") == "true"
+            )
 
             label_text = labels_by_for.get(dom_id, "")
             if not label_text:
                 parent_label = control.find_parent("label")
                 if parent_label:
                     label_text = parent_label.get_text(" ", strip=True)
+
+            # Inspect ARIA / SPA question container (Google Forms, Microsoft Forms, Typeform, Airtable)
+            parent_container = control.find_parent(
+                lambda t: t.get("role") == "listitem"
+                or (
+                    t.get("class")
+                    and any(
+                        k in str(c)
+                        for c in t.get("class")
+                        for k in ["freebird", "M7eMe", "ge-item", "ItemItem", "airtable"]
+                    )
+                )
+                or t.has_attr("data-params")
+            )
+            if parent_container:
+                if parent_container.find(
+                    lambda t: t.get("aria-label") == "Required question"
+                    or t.get("aria-required") == "true"
+                    or "*" in t.get_text(strip=True)
+                ):
+                    is_required = True
+
+                if not label_text:
+                    heading_el = parent_container.find(
+                        lambda t: t.get("role") == "heading"
+                        or (
+                            t.get("class")
+                            and any(
+                                k in str(t.get("class"))
+                                for k in [
+                                    "M7eMe",
+                                    "ItemTitle",
+                                    "title",
+                                    "heading",
+                                    "label",
+                                    "HoG1xd",
+                                    "question",
+                                ]
+                            )
+                        )
+                    )
+                    if heading_el:
+                        label_text = heading_el.get_text(" ", strip=True)
+
+            # Fallback to aria-label or aria-labelledby
+            if not label_text and control.get("aria-label"):
+                label_text = control.get("aria-label", "").strip()
+            elif not label_text and control.get("aria-labelledby"):
+                ref_id = control.get("aria-labelledby")
+                ref_el = soup.find(id=ref_id)
+                if ref_el:
+                    label_text = ref_el.get_text(" ", strip=True)
 
             if input_type == "checkbox" and any(
                 w in f"{dom_name} {dom_id} {label_text}".lower()
@@ -525,8 +592,27 @@ class DeepPageAndPdfInspector:
                     val = (opt.get("value") or opt.get_text(strip=True)).strip()
                     if val:
                         options.append(val)
+            elif role_attr == "radio":
+                opt_val = control.get("aria-label") or control.get_text(" ", strip=True)
+                if opt_val:
+                    options.append(opt_val)
 
-            selector = f"#{dom_id}" if dom_id else (f"[name='{dom_name}']" if dom_name else tag_name)
+            # Build resilient selector
+            if dom_id:
+                selector = f"#{dom_id}"
+            elif dom_name:
+                selector = f"[name='{dom_name}']"
+            elif control.get("aria-labelledby"):
+                selector = f"[aria-labelledby='{control.get('aria-labelledby')}']"
+            elif control.get("jsname"):
+                selector = f"[jsname='{control.get('jsname')}']"
+            elif control.get("aria-label"):
+                selector = f"[aria-label='{control.get('aria-label')}']"
+            elif role_attr:
+                selector = f"[role='{role_attr}']"
+            else:
+                selector = tag_name
+
             discovered_fields.append(
                 DiscoveredFormField(
                     dom_selector=selector,
@@ -540,7 +626,11 @@ class DeepPageAndPdfInspector:
                     options=options,
                 )
             )
-            if is_required and mapped_key not in required_vault_keys and mapped_key != "tailored_motivation_essay":
+            if (
+                is_required
+                and mapped_key not in required_vault_keys
+                and mapped_key != "tailored_motivation_essay"
+            ):
                 required_vault_keys.append(mapped_key)
 
         visible_text = soup.get_text(" ", strip=True)
@@ -657,9 +747,51 @@ class RealBrowserFormAutoFiller:
             uploaded_files_count = 0
 
             for field in inspection.discovered_fields:
+                el = None
                 try:
                     el = driver.find_element(By.CSS_SELECTOR, field.dom_selector)
                 except Exception:
+                    pass
+
+                # Fallback element lookup for SPA / Google Forms dynamic attributes
+                if el is None and field.dom_name:
+                    try:
+                        el = driver.find_element(By.NAME, field.dom_name)
+                    except Exception:
+                        pass
+
+                if el is None and field.label_text:
+                    try:
+                        safe_label = re.sub(r'["\']', '', field.label_text[:30]).strip()
+                        if safe_label:
+                            candidates = driver.find_elements(
+                                By.XPATH,
+                                f"//input[contains(@aria-label, '{safe_label}')] | //textarea[contains(@aria-label, '{safe_label}')]",
+                            )
+                            if candidates:
+                                el = candidates[0]
+                    except Exception:
+                        pass
+
+                if el is None and field.label_text:
+                    try:
+                        safe_txt = re.sub(r'["\']', '', field.label_text[:25]).strip()
+                        if safe_txt:
+                            containers = driver.find_elements(
+                                By.XPATH,
+                                f"//*[contains(text(), '{safe_txt}')]/ancestor::*[@role='listitem' or contains(@class, 'Item') or contains(@class, 'ge-item')][1]",
+                            )
+                            if containers:
+                                inner_inputs = containers[0].find_elements(
+                                    By.CSS_SELECTOR,
+                                    "input, textarea, [role='radio'], [role='checkbox']",
+                                )
+                                if inner_inputs:
+                                    el = inner_inputs[0]
+                    except Exception:
+                        pass
+
+                if el is None:
                     continue
 
                 if field.mapped_vault_key == "__auto_agree_checkbox__":
@@ -694,7 +826,10 @@ class RealBrowserFormAutoFiller:
                         filled_count += 1
 
                 elif field.input_type in ("checkbox", "radio"):
-                    if not el.is_selected():
+                    try:
+                        if not el.is_selected():
+                            el.click()
+                    except Exception:
                         el.click()
                     filled_count += 1
 
@@ -725,8 +860,24 @@ class RealBrowserFormAutoFiller:
             if auto_click_submit:
                 submit_buttons = driver.find_elements(
                     By.CSS_SELECTOR,
-                    "button[type='submit'], input[type='submit'], #submit-btn, .submit-btn",
+                    "button[type='submit'], input[type='submit'], #submit-btn, .submit-btn, [role='button'][aria-label*='Submit'], [role='button'][aria-label*='إرسال']",
                 )
+                if not submit_buttons:
+                    for b in driver.find_elements(
+                        By.CSS_SELECTOR, "div[role='button'], span[role='button'], button"
+                    ):
+                        txt = (b.text or "").strip().lower()
+                        if txt in (
+                            "submit",
+                            "إرسال",
+                            "send",
+                            "apply",
+                            "تقديم",
+                            "submit application",
+                        ):
+                            submit_buttons = [b]
+                            break
+
                 if submit_buttons:
                     submit_buttons[0].click()
                     time.sleep(0.4)
@@ -1148,6 +1299,10 @@ class CandidateMemoryVault:
             "total_vault_fields": len(self.get_known_fields()),
         }
 
+    def learn_from_user(self, key: str, val: str) -> None:
+        """Helper to learn a single field from the user and persist immediately."""
+        self.learn_from_user_answers({key: val})
+
     def _sync_to_profile_json(self) -> None:
         self.profile_json_path.parent.mkdir(parents=True, exist_ok=True)
         existing_data: Dict[str, Any] = {}
@@ -1209,19 +1364,92 @@ class AutonomousApplicantEngine:
         self.screenshots_dir = screenshots_dir or (db.db_path.parent / "screenshots")
         self.browser_filler = RealBrowserFormAutoFiller(screenshots_dir=self.screenshots_dir)
 
-    def synthesize_motivation_statement(self, opp: Dict[str, Any], known: Dict[str, str]) -> str:
+    def synthesize_motivation_statement(
+        self, opp: Dict[str, Any], known: Dict[str, str]
+    ) -> str:
+        """
+        Synthesizes an authentic, compelling 250-300 word Statement of Purpose
+        tailored to the specific opportunity mission, domain, and organizer,
+        anchoring strictly to candidate's actual projects, coursework, and tri-jurisdiction background.
+        Saves the resulting essay to the SQLite `learned_qa_bank` table for semantic reuse.
+        """
+        opp_code = opp.get("opportunity_code") or f"ID-{opp.get('id', 'opp')}"
+        q_key = f"motivation_statement_{opp_code}"
+
+        # 1. Check if an essay for this opportunity already exists in learned_qa_bank
+        existing_qa = self.db.get_all_learned_qa()
+        if q_key in existing_qa:
+            self.db.increment_qa_reuse(q_key)
+            return existing_qa[q_key]["answer_text"]
+
+        # 2. Check for LLM generation via Gemini if API key configured
+        essay_text = ""
+        gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+
+        title = opp.get("title", "International Academic Opportunity")
+        organizer = opp.get("organizer", "the Host Organization")
+        track = opp.get("track_category", "GENERAL")
+        desc = opp.get("raw_description", "")
+        city = opp.get("location_city", "Host City")
+        country = opp.get("location_country", "Host Country")
+
+        if gemini_api_key:
+            try:
+                prompt = (
+                    f"Write a rigorous, authentic 250-300 word Statement of Purpose / Motivation Essay for Mohammad Mahdi Alsalkadi "
+                    f"applying for '{title}' organized by '{organizer}' in {city}, {country} (Track: {track}).\n\n"
+                    f"Opportunity Details:\n{desc[:1000]}\n\n"
+                    f"Strict Candidate Ground Truth:\n"
+                    f"- 1st-Year Undergraduate pursuing Bachelor of Computer Science (Artificial Intelligence) with Honours at Universiti Teknologi Malaysia (UTM).\n"
+                    f"- CGPA: 3.53 / 4.00.\n"
+                    f"- Syrian national residing in Malaysia under international student visa, with family residency in Kuwait.\n"
+                    f"- Technical skills: Python, PyTorch deep learning, C++, algorithms, ZCO-Hunter agentic system.\n"
+                    f"- Field competencies: Outdoor trekking, tropical resilience, swimming.\n\n"
+                    f"Rules:\n"
+                    f"- Exactly 250-300 words in 3-4 cohesive paragraphs.\n"
+                    f"- Never fabricate GPA, awards, or past jobs.\n"
+                    f"- Never include internal student IDs, t-shirt sizes, or passport numbers.\n"
+                    f"- Tone: academic, humble, ambitious, technically grounded."
+                )
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_api_key}"
+                req_data = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
+                req = urllib.request.Request(url, data=req_data, headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    resp_data = json.loads(resp.read().decode("utf-8"))
+                    essay_text = resp_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            except Exception as exc:
+                logger.debug("Gemini LLM essay synthesis fallback: %s", exc)
+
+        # 3. Deterministic high-quality 4-paragraph fallback if no LLM or LLM failed
+        if not essay_text or len(essay_text.split()) < 150:
+            try:
+                pm = PortfolioManager()
+                essay_text = pm.synthesize_tailored_motivation_letter(opp)
+            except Exception:
+                essay_text = (
+                    f"Application Statement for {title} ({organizer}):\n\n"
+                    f"As a {known.get('age', '20')}-year-old {known.get('nationality', 'Syrian')} student "
+                    f"pursuing a {known.get('degree_and_major', 'B.Sc. in Artificial Intelligence')} "
+                    f"({known.get('academic_year', 'Year 1')}) at {known.get('university_name', 'Universiti Teknologi Malaysia')} "
+                    f"with valid residency in {known.get('secondary_residency_country', 'Kuwait')}, I am eager to "
+                    f"contribute actively to {title} in {city}, {country}. My background bridges practical programming "
+                    f"in Python and PyTorch with a dedication to environmental resilience and community leadership."
+                )
+
+        # 4. Save to persistent learned_qa_bank
+        prompt_ar = f"رسالة الدافع المخصصة لفرصة {title} ({organizer})"
+        tags = ["motivation_statement", track]
         try:
-            pm = PortfolioManager()
-            return pm.synthesize_tailored_motivation_letter(opp)
-        except Exception:
-            return (
-                f"Application Statement for {opp['title']} ({opp['organizer']}): "
-                f"As a {known.get('age', '20')}-year-old {known.get('nationality', 'Syrian')} student "
-                f"pursuing a {known.get('degree_and_major', 'B.Sc. in Artificial Intelligence')} "
-                f"({known.get('academic_year', 'Year 1')}) at {known.get('university_name', 'UTM')} in Malaysia "
-                f"with valid residency in {known.get('secondary_residency_country', 'Kuwait')}, I am eager to "
-                f"contribute to {opp['title']} in {opp['location_city']}."
+            self.db.upsert_learned_qa(
+                question_key=q_key,
+                question_prompt_ar=prompt_ar,
+                answer_text=essay_text,
+                tags=tags,
             )
+        except Exception as exc:
+            logger.warning("Failed to save essay to learned_qa_bank: %s", exc)
+
+        return essay_text
 
     def attempt_auto_application(self, opp: Dict[str, Any]) -> Dict[str, Any]:
         opp_id = opp["id"]

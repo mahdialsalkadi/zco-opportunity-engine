@@ -29,9 +29,10 @@ import pathlib
 import re
 import signal
 import sys
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 _VENV_PYTHON = pathlib.Path(__file__).resolve().parent / ".venv" / "bin" / "python"
 if _VENV_PYTHON.exists() and pathlib.Path(sys.executable).resolve() != _VENV_PYTHON.resolve():
@@ -347,6 +348,161 @@ def get_curated_seed_batch(base_dir: pathlib.Path = BASE_DIR) -> List[RawOpportu
         ),
     ]
 
+AGGREGATOR_DOMAINS: List[str] = [
+    "opportunitydesk.org",
+    "opportunitiescorners.com",
+    "oyaop.com",
+    "scholarshiproar.com",
+    "opportunitiesforafricans.com",
+    "scholars4dev.com",
+    "youthop.com",
+    "armacad.info",
+]
+
+
+def resolve_two_hop_application_link(article_url: str, timeout: int = 8) -> Tuple[str, str]:
+    """
+    Two-Hop Link Resolver:
+    Fetches the article page from an aggregator portal (e.g. OpportunityDesk, YouthOp),
+    extracts the comprehensive article body text (full eligibility, funding perks),
+    and scans for the official external application link (e.g. Google Forms, Airtable,
+    or host university/organization portal under 'Apply Now', 'Official Link').
+    Returns: (resolved_official_apply_url, enriched_article_text)
+    """
+    if not article_url.startswith(("http://", "https://")):
+        return article_url, ""
+
+    is_aggregator = any(dom in article_url.lower() for dom in AGGREGATOR_DOMAINS)
+    if not is_aggregator:
+        return article_url, ""
+
+    req = urllib.request.Request(
+        article_url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            )
+        },
+    )
+    html = ""
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        logger.debug("Two-hop article fetch failed for %s: %s", article_url, exc)
+        return article_url, ""
+
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        # 1. Extract full article text
+        article_el = (
+            soup.find("article")
+            or soup.find(
+                "div",
+                class_=lambda c: c
+                and any(
+                    k in str(c)
+                    for k in [
+                        "entry-content",
+                        "post-content",
+                        "article-content",
+                        "main-content",
+                    ]
+                ),
+            )
+            or soup.body
+        )
+        enriched_text = ""
+        if article_el:
+            paragraphs = [
+                p.get_text(" ", strip=True)
+                for p in article_el.find_all("p")
+                if p.get_text(strip=True)
+            ]
+            enriched_text = "\n\n".join(paragraphs)
+
+        # 2. Discover official external link
+        social_and_ignore = [
+            "facebook.com",
+            "twitter.com",
+            "x.com",
+            "linkedin.com",
+            "instagram.com",
+            "pinterest.com",
+            "whatsapp.com",
+            "t.me",
+            "telegram.me",
+            "youtube.com",
+            "feedburner.com",
+            "gravatar.com",
+            "wordpress.org",
+            "addtoany.com",
+        ]
+        parsed_orig = urllib.parse.urlparse(article_url)
+        host_netloc = parsed_orig.netloc.lower()
+
+        candidates: List[Tuple[int, str]] = []
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            if not href.startswith(("http://", "https://")):
+                continue
+            href_lower = href.lower()
+            if any(s in href_lower for s in social_and_ignore):
+                continue
+            parsed_href = urllib.parse.urlparse(href)
+            if parsed_href.netloc.lower() == host_netloc:
+                continue
+
+            link_text = a.get_text(" ", strip=True).lower()
+            link_title = (a.get("title") or "").lower()
+            haystack = f"{link_text} {link_title} {href_lower}"
+
+            # High priority: Google Forms, Typeform, Airtable, Microsoft Forms
+            if any(
+                f in href_lower
+                for f in [
+                    "forms.gle",
+                    "docs.google.com/forms",
+                    "airtable.com",
+                    "typeform.com",
+                    "forms.office.com",
+                    "tally.so",
+                ]
+            ):
+                candidates.append((100, href))
+                continue
+
+            # Strong action keywords
+            if re.search(
+                r"\b(apply\s*now|click\s*here\s*to\s*apply|official\s*link|official\s*website|apply\s*online|application\s*form|register\s*here|online\s*application)\b",
+                haystack,
+            ):
+                candidates.append((90, href))
+                continue
+
+            # Secondary keywords
+            if re.search(
+                r"\b(application|register|apply|portal|guidelines)\b", haystack
+            ):
+                candidates.append((60, href))
+                continue
+
+        if candidates:
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            best_link = candidates[0][1]
+            logger.info("Two-Hop Link Resolver: '%s' -> '%s'", article_url, best_link)
+            return best_link, enriched_text
+
+        return article_url, enriched_text
+    except Exception as exc:
+        logger.debug("Two-hop resolution failed for %s: %s", article_url, exc)
+        return article_url, ""
+
+
 class AsyncOpportunityCrawler:
     def __init__(
         self,
@@ -439,6 +595,16 @@ class AsyncOpportunityCrawler:
             )
         return records
 
+    async def resolve_official_application_url(
+        self, article_url: str, timeout: int = 8
+    ) -> Tuple[str, str]:
+        """
+        Asynchronously resolves two-hop application links and enriches article content.
+        """
+        return await asyncio.to_thread(
+            resolve_two_hop_application_link, article_url, timeout
+        )
+
     async def run_single_cycle(self, include_curated_seed: bool = False) -> Dict[str, int]:
         started_iso = dt.datetime.now(dt.timezone.utc).isoformat()
         new_items = 0
@@ -460,6 +626,27 @@ class AsyncOpportunityCrawler:
             if isinstance(xml_resp, Exception) or not xml_resp:
                 continue
             parsed_records = self.parse_rss_items(xml_resp, src)
+
+            # Two-hop resolution for newly discovered aggregator records
+            agg_recs = [
+                r
+                for r in parsed_records
+                if any(dom in r.apply_url.lower() for dom in AGGREGATOR_DOMAINS)
+            ]
+            if agg_recs:
+                hop_tasks = [
+                    self.resolve_official_application_url(r.apply_url) for r in agg_recs
+                ]
+                hop_results = await asyncio.gather(*hop_tasks, return_exceptions=True)
+                for r, h_res in zip(agg_recs, hop_results):
+                    if not isinstance(h_res, Exception) and h_res:
+                        resolved_url, full_text = h_res
+                        if resolved_url and resolved_url != r.apply_url:
+                            r.apply_url = resolved_url
+                        if full_text and len(full_text) > len(r.raw_description):
+                            r.raw_description = full_text[:4000]
+                            r.raw_terms_text = full_text[:6000]
+
             for rec in parsed_records:
                 inserted_id = self.db.ingest_raw_opportunity(rec)
                 if inserted_id is not None:

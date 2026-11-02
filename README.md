@@ -5,7 +5,7 @@
 [![Typst](https://img.shields.io/badge/typesetting-Typst%200.12+-239dad.svg)](https://typst.app/)
 [![Protocol](https://img.shields.io/badge/MCP-FastMCP-purple.svg)](https://modelcontextprotocol.io/)
 [![Database](https://img.shields.io/badge/database-SQLite%20WAL-lightgrey.svg)](https://www.sqlite.org/)
-[![Tests](https://img.shields.io/badge/tests-17%2F17%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-21%2F21%20passed-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An enterprise-grade, autonomous opportunity auditing, memory-learning, and programmatic application system engineered specifically for **Mohammad Mahdi Alsalkadi** (Syrian national, 1st-year Artificial Intelligence undergraduate at Universiti Teknologi Malaysia with honours, CGPA 3.53, Kuwait residency).
@@ -149,14 +149,23 @@ python3 supervisor.py --status
 
 ---
 
-## 5. Repository Directory Layout
+## 5. ZCO-Hunter v4.2 Field-Ready Enhancements
+
+* **Two-Hop Link Resolver (`async_crawler.py`):** Automatically traverses intermediary opportunity aggregators (OpportunityDesk, YouthOp, OpportunitiesCorners) to extract rich eligibility and funding perks from the article body, detecting the official external application URL (Google Forms, Airtable, university portal) under *"Apply Now"* / *"Official Link"*.
+* **SPA Form Adapter (`engines_and_auditor.py`):** Native DOM/ARIA traversal for modern Single Page Application forms (Google Forms, Airtable, Typeform, Microsoft Forms). Inspects `[role="listitem"]`, maps container headings `[role="heading"]` directly to candidate vault keys, and interacts with ARIA inputs (`role="radio"`, `role="checkbox"`, `[jsname]`).
+* **Reply-to-Learn Interaction (`telegram_bot.py`):** When an application pauses for a first-time field (`PAUSED_NEEDS_USER_INPUT`), the bot sends an interactive prompt to Telegram ([@Uiii007bot](https://t.me/Uiii007bot)). Replying directly to that message permanently commits the answer to `CandidateMemoryVault` and immediately resumes submission with photo receipts.
+* **LLM Essay Synthesizer & Persistent QA Bank (`engines_and_auditor.py`):** Produces authentic 250–300 word Statements of Purpose tailored to host organizations, anchoring strictly to candidate's verified background and coursework, cached in the SQLite `learned_qa_bank` table for semantic reuse.
+
+---
+
+## 6. Repository Directory Layout
 
 ```
 ├── .agents/
 │   └── skills/zco-hunter/SKILL.md    # Agent Skill definition & orchestrator rules
 ├── config/
-│   ├── candidate_profile.json        # Ground truth candidate data
-│   ├── master_profile.yaml           # Structured portfolio & coursework
+│   ├── candidate_profile.example.json# Sanitized template
+│   ├── master_profile.example.yaml   # Sanitized template
 │   └── telegram_config.json          # Bot metadata
 ├── data/                             # Ignored in git (runtime dynamic state)
 │   ├── documents/                    # Compiled PDFs
@@ -167,14 +176,15 @@ python3 supervisor.py --status
 ├── tests/
 │   ├── test_telegram_bot.py          # Bot interactions & card rendering
 │   ├── test_typst_cv_engine.py       # Typst synthesis, 1-page enforcement, sanitization
+│   ├── test_v42_features.py          # Two-hop resolver, Google Forms ARIA, Reply-to-Learn, QA bank
 │   └── test_zco_engine.py            # Gatekeeper & eligibility testbed
-├── async_crawler.py                  # 24/7 background opportunity discovery
+├── async_crawler.py                  # 24/7 background opportunity discovery & two-hop resolver
 ├── database.py                       # Concurrent SQLite state machine
-├── engines_and_auditor.py            # Eligibility gates & Chromium form auto-filler
+├── engines_and_auditor.py            # Eligibility gates, SPA form adapter, & Chromium filler
 ├── portfolio_and_docs_engine.py      # SOP synthesis & HTML document fallback
 ├── server.py                         # FastMCP Server & batch audit CLI
 ├── supervisor.py                     # Multi-process daemon monitor
-├── telegram_bot.py                   # Telegram approval bot (@Uiii007bot)
+├── telegram_bot.py                   # Telegram approval bot with Reply-to-Learn (@Uiii007bot)
 ├── typst_agentic_cv_engine.py        # 4-layer Typst Agentic CV Engine
 ├── web_dashboard.py                  # Real-time web portal (FastAPI + Tailwind)
 ├── .env.example                      # Environment variables template
@@ -185,6 +195,6 @@ python3 supervisor.py --status
 
 ---
 
-## 6. License
+## 7. License
 
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.

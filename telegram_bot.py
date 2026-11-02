@@ -210,6 +210,7 @@ class ZCOTelegramBotService:
         self.portfolio_mgr = PortfolioManager()
         self.config = load_bot_config()
         self.bot_token = self.config.get("bot_token", DEFAULT_BOT_TOKEN)
+        self.pending_missing_replies: Dict[int, Dict[str, str]] = {}
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user = update.effective_user
@@ -351,7 +352,83 @@ class ZCOTelegramBotService:
         text = update.message.text.strip()
         chat_id = update.effective_chat.id
 
-        # Check for email
+        # ---------------------------------------------------------------------
+        # 1. Reply-to-Learn Flow: If user replied to a missing-field prompt
+        # ---------------------------------------------------------------------
+        if update.message.reply_to_message:
+            replied_msg = update.message.reply_to_message
+            replied_id = replied_msg.message_id
+            replied_text = replied_msg.text or ""
+
+            opp_code_to_resume = None
+            field_key_to_learn = None
+
+            if replied_id in self.pending_missing_replies:
+                info = self.pending_missing_replies.pop(replied_id)
+                opp_code_to_resume = info["opportunity_code"]
+                field_key_to_learn = info["field_key"]
+            else:
+                opp_match = re.search(r"الفرصة:\s*`?([A-Za-z0-9_-]+)`?", replied_text)
+                field_match = re.search(r"الحقل المطلوب:\s*`?([a-z0-9_]+)`?", replied_text)
+                if opp_match and field_match:
+                    opp_code_to_resume = opp_match.group(1)
+                    field_key_to_learn = field_match.group(1)
+
+            if opp_code_to_resume and field_key_to_learn:
+                user_val = text.strip()
+                self.vault.learn_from_user(field_key_to_learn, user_val)
+                logger.info(
+                    "Learned missing field '%s' via Telegram reply for %s: '%s'",
+                    field_key_to_learn,
+                    opp_code_to_resume,
+                    user_val,
+                )
+
+                await update.message.reply_text(
+                    f"🧠 <b>تم حفظ المعلومة في الخزنة المستدامة للأبد:</b>\n"
+                    f"• <code>{field_key_to_learn}</code> = <code>{user_val}</code>\n\n"
+                    f"⏳ جاري استئناف التقديم التلقائي على الفرصة <code>{opp_code_to_resume}</code> عبر المتصفح الحقيقي...",
+                    parse_mode=ParseMode.HTML,
+                )
+
+                res = self.controller.learn_and_resume_applications(
+                    user_answers={field_key_to_learn: user_val}
+                )
+
+                opp = self.db.get_opportunity_by_code(opp_code_to_resume)
+                if opp and opp["status"] == OpportunityStatus.APPLIED_AUTOMATICALLY:
+                    receipt = json.loads(opp.get("submission_receipt_json") or "{}")
+                    ref = receipt.get("confirmation_ref", "")
+                    success_text = (
+                        f"🎉 <b>تم التقديم بنجاح بعد استلام إجابتك!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"🏷 <b>الفرصة:</b> <code>{opp_code_to_resume}</code> — {opp['title']}\n"
+                        f"🎫 <b>رقم إيصال التأكيد:</b> <code>{ref}</code>\n"
+                        f"📝 <b>الملاحظات:</b> {receipt.get('notes', 'تم ملء الحقول بنجاح.')}\n"
+                        f"━━━━━━━━━━━━━━━━━━"
+                    )
+                    await update.message.reply_text(success_text, parse_mode=ParseMode.HTML)
+
+                    post_shot = receipt.get("post_submit_screenshot_path", "")
+                    if post_shot and pathlib.Path(post_shot).exists():
+                        try:
+                            with open(post_shot, "rb") as f:
+                                await update.message.reply_photo(
+                                    photo=f,
+                                    caption=f"📸 إيصال التأكيد النهائي بنجاح من الموقع ({opp_code_to_resume})",
+                                )
+                        except Exception as e:
+                            logger.warning("Could not send post-submit screenshot: %s", e)
+                elif opp and opp["status"] == OpportunityStatus.PAUSED_NEEDS_USER_INPUT:
+                    await update.message.reply_text(
+                        f"⚠️ تم حفظ <code>{field_key_to_learn}</code> بنجاح، ولكن ما زال هناك حقول إضافية مطلوبة لاستكمال الاستمارة.",
+                        parse_mode=ParseMode.HTML,
+                    )
+                return
+
+        # ---------------------------------------------------------------------
+        # 2. General Profile Quick-Update parsing (Email, Phone, CGPA)
+        # ---------------------------------------------------------------------
         email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
         phone_match = re.search(r'(\+?\d{1,3}[- ]?)?\(?\d{2,4}\)?[- ]?\d{3,4}[- ]?\d{3,4}', text)
 
@@ -618,13 +695,23 @@ class ZCOTelegramBotService:
 
             elif status == OpportunityStatus.PAUSED_NEEDS_USER_INPUT:
                 missing = app_res.get("missing_fields", [])
-                missing_str = "\n".join(f"• <b>{m['label_ar']}</b> (<code>{m['field_key']}</code>)" for m in missing)
-                pause_text = (
-                    f"⚠️ <b>توقف التقديم مؤقتاً لنقص حقول جديدة تُطلب لأول مرة:</b>\n"
-                    f"{missing_str}\n\n"
-                    f"يرجى إرسال الإجابة لتخزينها في الخزنة نهائياً واستئناف التقديم فوراً."
-                )
-                await query.message.reply_text(pause_text, parse_mode=ParseMode.HTML)
+                for m in missing:
+                    field_k = m.get("field_key", "custom_field")
+                    label_ar = m.get("label_ar", field_k)
+                    pause_text = (
+                        f"⏸️ <b>توقف التقديم مؤقتاً — مطلوب معلومة تُطلب لأول مرة!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"🏷 <b>الفرصة:</b> <code>{opp_code}</code> — {opp['title']}\n"
+                        f"❓ <b>الحقل المطلوب:</b> <code>{field_k}</code>\n"
+                        f"📝 <b>الوصف:</b> {label_ar}\n\n"
+                        f"💡 <i>فقط قم بالرد المباشر (Reply) على هذه الرسالة بإجابتك، وسيحفظها النظام في الخزنة للأبد ويستأنف التقديم فوراً!</i>"
+                    )
+                    sent_msg = await query.message.reply_text(pause_text, parse_mode=ParseMode.HTML)
+                    self.pending_missing_replies[sent_msg.message_id] = {
+                        "opportunity_code": opp_code,
+                        "field_key": field_k,
+                        "label_ar": label_ar,
+                    }
 
         elif action == "decline":
             self.db.update_opportunity_status(
