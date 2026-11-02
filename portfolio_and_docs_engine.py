@@ -351,7 +351,7 @@ class PortfolioManager:
             # 2. AI Governance, Safety & Policy (GovAI London)
             elif any(k in title_upper or k in track_upper for k in ["GOVAI", "GOVERNANCE", "POLICY", "SAFETY", "ETHICS"]):
                 objective_text = (
-                    f"First-year Artificial Intelligence honours student at UTM with an international Syrian-Kuwaiti-Malaysian background. "
+                    f"First-year Artificial Intelligence honours student at UTM with strong foundations in autonomous systems and algorithmic auditing. "
                     f"Dedicated to the safety, ethical alignment, and international governance of advanced AI systems. "
                     f"Applying for the {title} in London to analyze systemic AI deployment trajectories across emerging and developing economies."
                 )
@@ -429,6 +429,13 @@ class PortfolioManager:
         tools = ", ".join(skills.get("developer_tools", []))
         langs = ", ".join(f"{l['language']} ({l['proficiency']})" for l in skills.get("languages", []))
         strengths = ", ".join(skills.get("outdoor_and_personal_strengths", []))
+
+        # Kuwait residency is strictly contingent on explicit GCC / Kuwait mandate
+        is_gcc_mandated = any(
+            k in f"{opp.get('title', '')} {opp.get('raw_description', '')} {opp.get('raw_terms_text', '')}".lower()
+            for k in ["kuwait", "gcc", "gulf countries", "الكويت", "الخليج", "مجلس التعاون"]
+        ) if opp else False
+        residency_badge = "<span>🌍 Syrian Citizen (Kuwait Resident)</span>" if is_gcc_mandated else "<span>🌍 Syrian Citizen</span>"
 
         github_contact_html = (
             f'<span>🌐 <a href="{p.get("github_url")}">github.com/mahdialsalkadi</a></span>'
@@ -599,7 +606,7 @@ class PortfolioManager:
         <span>📧 <a href="mailto:{p.get('email')}">{p.get('email')}</a></span>
         <span>📱 {p.get('phone_my')}</span>
         {github_contact_html}
-        <span>🌍 Syrian Citizen (Kuwait Resident)</span>
+        {residency_badge}
     </div>
 </div>
 
@@ -726,14 +733,24 @@ class PortfolioManager:
         year = edu.get("academic_year", "Year 1")
         cgpa = edu.get("cgpa", "3.53 / 4.00")
 
+        # Candidate strict directive: Never mention Kuwait / GCC residency unless explicitly demanded by the opportunity!
+        corpus = f"{title} {opp.get('raw_description', '')} {opp.get('raw_terms_text', '')}".lower()
+        is_gcc_mandated = any(k in corpus for k in ["kuwait", "gcc", "gulf countries", "الكويت", "الخليج", "مجلس التعاون"])
+
+        bg_text = (
+            "being a Syrian national with valid family residency in Kuwait and currently undertaking university studies in Malaysia"
+            if is_gcc_mandated
+            else "being a Syrian national currently undertaking university studies in Artificial Intelligence with honours in Malaysia"
+        )
+
         # Paragraph 1: Sincere Introduction & Academic Motivation
         p1 = (
             f"Dear Selection Committee of {organizer},\n\n"
             f"I am writing to express my enthusiastic application for {title} in {city}, {country}. "
             f"As a {year} undergraduate pursuing a {degree} at {university} (currently maintaining a CGPA of {cgpa}), "
-            f"my academic journey is shaped by a unique multicultural perspective—being a Syrian national, raised with family ties in Kuwait, "
-            f"and currently undertaking university studies in Malaysia. This diverse background has instilled in me a resilient work ethic "
-            f"and a genuine drive to master modern computational tools to solve real-world challenges. Participating in {title} represents "
+            f"my academic journey is grounded in resilience, high ambition, and technical focus—{bg_text}. "
+            f"This background has instilled in me a disciplined work ethic and a genuine drive to master modern "
+            f"computational tools to solve real-world challenges. Participating in {title} represents "
             f"a pivotal milestone in my academic development."
         )
 

@@ -131,15 +131,45 @@ async def get_opportunities(
 ) -> Dict[str, Any]:
     raw_opps = db.get_verified_opportunities()
     
-    # Deduplicate by normalized title
-    seen_titles = set()
-    unique_opps = []
+    # Deduplicate by normalized title, strictly prioritizing canonical official URLs over aggregator posts
+    from collections import defaultdict
+    aggregator_domains = [
+        "opportunitydesk.org",
+        "opportunitiescorners.com",
+        "oyaop.com",
+        "scholarshiproar.com",
+        "opportunitiesforafricans.com",
+        "scholars4dev.com",
+        "youthop.com",
+        "armacad.info",
+    ]
+
+    def score_opp(opp):
+        s = 0
+        u = (opp.get("apply_url") or "").lower()
+        if u and not any(agg in u for agg in aggregator_domains):
+            s += 100
+        st = opp.get("status", "")
+        if st in ("VERIFIED_ELIGIBLE", "APPLIED_AUTOMATICALLY"):
+            s += 50
+        s += opp.get("id", 0)
+        return s
+
+    by_title = defaultdict(list)
     for opp in raw_opps:
         norm_title = opp["title"].strip().lower()
-        if norm_title in seen_titles:
-            continue
-        seen_titles.add(norm_title)
-        unique_opps.append(opp)
+        by_title[norm_title].append(opp)
+
+    unique_opps = []
+    for norm_title, group in by_title.items():
+        group.sort(key=score_opp, reverse=True)
+        best = group[0]
+        u = best.get("apply_url") or ""
+        if any(agg in u.lower() for agg in aggregator_domains):
+            src = best.get("source_url") or ""
+            if src and not any(agg in src.lower() for agg in aggregator_domains):
+                best["apply_url"] = src
+        unique_opps.append(best)
 
     results = []
     for o in unique_opps:

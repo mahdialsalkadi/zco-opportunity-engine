@@ -348,6 +348,107 @@ def get_curated_seed_batch(base_dir: pathlib.Path = BASE_DIR) -> List[RawOpportu
         ),
     ]
 
+def infer_clean_organizer(title: str, desc: str = "") -> str:
+    """
+    Extracts the genuine host institution / university / foundation organizer from the title & content,
+    ensuring aggregator platform names (Opportunities Corners, OYA, etc.) are NEVER assigned as the organizer.
+    """
+    t = title.lower()
+    d = desc.lower()
+    
+    if "caltech" in t:
+        return "California Institute of Technology (Caltech)"
+    if "mit" in t:
+        return "Massachusetts Institute of Technology (MIT)"
+    if "harvard" in t:
+        return "Harvard University (Griffin Financial Aid Office)"
+    if "utokyo" in t or "tokyo" in t:
+        return "The University of Tokyo & Amgen Foundation"
+    if "govai" in t or "governance of ai" in t:
+        return "Centre for the Governance of AI (GovAI London)"
+    if "oxford" in t or "clarendon" in t:
+        return "University of Oxford (Clarendon Fund)"
+    if "yale" in t or "tobin" in t:
+        return "Yale University (Tobin Center for Economic Policy)"
+    if "birmingham" in t:
+        return "University of Birmingham & Chevening UK"
+    if "warwick" in t:
+        return "University of Warwick (WMG)"
+    if "sheffield" in t:
+        return "University of Sheffield"
+    if "nottingham" in t:
+        return "University of Nottingham"
+    if "southampton" in t:
+        return "University of Southampton"
+    if "heidelberg" in t:
+        return "Heidelberg University"
+    if "tum" in t or "munich" in t:
+        return "Technical University of Munich (TUM)"
+    if "johns hopkins" in t:
+        return "Johns Hopkins University"
+    if "columbia" in t:
+        return "Columbia University School of Professional Studies"
+    if "dartmouth" in t:
+        return "Dartmouth College & US Ivy League Financial Aid Portals"
+    if "epfl" in t:
+        return "École Polytechnique Fédérale de Lausanne (EPFL)"
+    if "chalmers" in t or "adlerbert" in t:
+        return "Chalmers University of Technology"
+    if "simon fraser" in t:
+        return "Simon Fraser University"
+    if "mastercard" in t:
+        if "sciences po" in t:
+            return "Sciences Po Paris & Mastercard Foundation"
+        if "auc" in t:
+            return "The American University in Cairo & Mastercard Foundation"
+        if "alche" in t or "alu" in t:
+            return "African Leadership University & Mastercard Foundation"
+        return "Mastercard Foundation"
+    if "swedish institute" in t or "si scholarship" in t:
+        return "Swedish Institute (SI)"
+    if "erasmus" in t or "planthealth" in t:
+        return "Erasmus Mundus PlantHealth Consortium"
+    if "un " in t or "united nations" in t or "dpoa" in t or "unv" in t:
+        if "dpoa" in t:
+            return "United Nations (UN-OHRLLS)"
+        return "United Nations"
+    if "irex" in t:
+        return "IREX & US Department of State"
+    if "mozilla" in t:
+        return "Mozilla Foundation"
+    if "aspen" in t:
+        return "The Aspen Institute"
+    if "ceb" in t:
+        return "Council of Europe Development Bank (CEB)"
+    if "universal youth" in t or "uyls" in t:
+        return "Universal Youth Movement (UYM)"
+    if "smart scholarship" in t:
+        return "US Department of Defense (SMART Scholarship)"
+    if "frim" in t:
+        return "Forest Research Institute Malaysia (FRIM)"
+    if "wwf" in t:
+        return "WWF Malaysia & Marine Parks Department"
+    if "juara" in t:
+        return "Juara Turtle Conservation Initiative"
+    if "sols" in t:
+        return "SOLS Foundation Malaysia & Ministry of Youth"
+    if "black wealth club" in t:
+        return "Black Wealth Club Canada"
+    if "telemachus" in t or "athena" in t:
+        return "Global Thinkers Forum"
+    if "global burden of disease" in t or "gbd" in t:
+        return "Institute for Health Metrics and Evaluation (IHME), University of Washington"
+    if "women in ocean" in t:
+        return "HATCH Blue & Conservation International"
+    if "joy nwaeze" in t:
+        return "Global Youth Leadership Network"
+
+    # Clean from title
+    clean_title = re.sub(r"\(Fully[- ]Funded.*?\)|\[.*?\]|\d{4}/\d{2}|\d{4}", "", title, flags=re.I).strip()
+    candidate = clean_title.split(":")[0].strip()
+    return candidate if candidate and len(candidate) > 3 else "Host Selection Committee"
+
+
 AGGREGATOR_DOMAINS: List[str] = [
     "opportunitydesk.org",
     "opportunitiescorners.com",
@@ -493,14 +594,30 @@ def resolve_two_hop_application_link(article_url: str, timeout: int = 8) -> Tupl
 
         if candidates:
             candidates.sort(key=lambda x: x[0], reverse=True)
-            best_link = candidates[0][1]
-            logger.info("Two-Hop Link Resolver: '%s' -> '%s'", article_url, best_link)
-            return best_link, enriched_text
+            for _, link_cand in candidates:
+                if not any(agg in link_cand.lower() for agg in AGGREGATOR_DOMAINS):
+                    logger.info("Two-Hop Link Resolver: '%s' -> '%s'", article_url, link_cand)
+                    return link_cand, enriched_text
+
+        # Never return an aggregator link as the official application URL!
+        is_agg = any(dom in article_url.lower() for dom in AGGREGATOR_DOMAINS)
+        if is_agg:
+            # Fallback to known canonical institutional patterns
+            try:
+                from data.migrate_canonical_portals import OPPORTUNITY_CANONICAL_MAP
+                for m in OPPORTUNITY_CANONICAL_MAP:
+                    if any(k in article_url.lower() for k in m["keywords"]):
+                        logger.info("Two-Hop Canonical Map Fallback: '%s' -> '%s'", article_url, m["canonical_url"])
+                        return m["canonical_url"], enriched_text
+            except Exception:
+                pass
+            return "", enriched_text
 
         return article_url, enriched_text
     except Exception as exc:
         logger.debug("Two-hop resolution failed for %s: %s", article_url, exc)
-        return article_url, ""
+        is_agg = any(dom in article_url.lower() for dom in AGGREGATOR_DOMAINS)
+        return ("" if is_agg else article_url), ""
 
 
 class AsyncOpportunityCrawler:
@@ -557,6 +674,23 @@ class AsyncOpportunityCrawler:
             if not title or not link or not link.startswith(("http://", "https://")):
                 continue
 
+            # Strict Filter: Ignore aggregator listicles, general advice, and multi-program roundups
+            title_clean_lower = title.strip().lower()
+            if any(
+                re.search(pat, title_clean_lower)
+                for pat in [
+                    r"^\d+\+?\s+scholarships",
+                    r"^top\s+\d+",
+                    r"^what\s+is\s+a\s+master",
+                    r"^applying\s+to\s+canadian",
+                    r"^fully\s+funded\s+scholarships\s+for\s+international\s+students$",
+                    r"^fully\s+funded\s+scholarships\s+in\s+china",
+                    r"list\s+of\s+european\s+countries",
+                    r"tips\s+to\s+improve",
+                ]
+            ):
+                continue
+
             desc_raw = desc_node.get_text(strip=True) if desc_node else ""
             desc = re.sub(r"<[^>]+>", " ", desc_raw).strip()
             combined_lower = f"{title} {desc}".lower()
@@ -577,11 +711,14 @@ class AsyncOpportunityCrawler:
                 k in combined_lower for k in ["malaysia", "kuala lumpur", "johor", "sabah", "sarawak", "borneo", "utm"]
             )
 
+            # Assign true host institution / university instead of aggregator name
+            clean_host_organizer = infer_clean_organizer(title, desc)
+
             records.append(
                 RawOpportunityRecord(
                     title=title,
-                    organizer=source_cfg["name"],
-                    source_url=source_cfg["rss_url"],
+                    organizer=clean_host_organizer,
+                    source_url=link,
                     apply_url=link,
                     location_country="Malaysia" if is_my else "International",
                     location_city="Kuala Lumpur / Malaysia" if is_my else "Global / International Hub",

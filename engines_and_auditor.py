@@ -33,6 +33,7 @@ import datetime as dt
 import hashlib
 import io
 import json
+import logging
 import os
 import pathlib
 import re
@@ -41,6 +42,8 @@ import time
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger("zco_engines")
 
 from bs4 import BeautifulSoup
 from database import OpportunityDatabase, OpportunityStatus
@@ -1414,7 +1417,7 @@ class AutonomousApplicantEngine:
                     f"Strict Candidate Ground Truth:\n"
                     f"- 1st-Year Undergraduate pursuing Bachelor of Computer Science (Artificial Intelligence) with Honours at Universiti Teknologi Malaysia (UTM).\n"
                     f"- CGPA: 3.53 / 4.00.\n"
-                    f"- Syrian national residing in Malaysia under international student visa, with family residency in Kuwait.\n"
+                    f"- Syrian national residing in Malaysia under international student visa (UTM).\n"
                     f"- Technical skills: Python, PyTorch deep learning, C++, algorithms, ZCO-Hunter agentic system.\n"
                     f"- Field competencies: Outdoor trekking, tropical resilience, swimming.\n\n"
                     f"Rules:\n"
@@ -1438,12 +1441,20 @@ class AutonomousApplicantEngine:
                 pm = PortfolioManager()
                 essay_text = pm.synthesize_tailored_motivation_letter(opp)
             except Exception:
+                # Candidate strict directive: Never mention Kuwait unless explicitly mandated by the opportunity!
+                corpus_kw = f"{title} {desc} {opp.get('raw_terms_text', '')}".lower()
+                is_gcc_mandated = any(k in corpus_kw for k in ["kuwait", "gcc", "gulf countries", "الكويت", "الخليج", "مجلس التعاون"])
+                residency_clause = (
+                    f"with valid residency in {known.get('secondary_residency_country', 'Kuwait')}, "
+                    if is_gcc_mandated
+                    else ""
+                )
                 essay_text = (
                     f"Application Statement for {title} ({organizer}):\n\n"
                     f"As a {known.get('age', '20')}-year-old {known.get('nationality', 'Syrian')} student "
                     f"pursuing a {known.get('degree_and_major', 'B.Sc. in Artificial Intelligence')} "
                     f"({known.get('academic_year', 'Year 1')}) at {known.get('university_name', 'Universiti Teknologi Malaysia')} "
-                    f"with valid residency in {known.get('secondary_residency_country', 'Kuwait')}, I am eager to "
+                    f"{residency_clause}I am eager to "
                     f"contribute actively to {title} in {city}, {country}. My background bridges practical programming "
                     f"in Python and PyTorch with a dedication to environmental resilience and community leadership."
                 )
