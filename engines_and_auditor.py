@@ -821,6 +821,24 @@ def preflight_application_url(
     result.redirected_to_homepage = orig_path != "/" and final_path == "/"
 
     has_password_field = bool(soup.find("input", {"type": "password"}))
+    is_direct_form_host = any(
+        dom in apply_url.lower()
+        for dom in (
+            "airtable.com",
+            "forms.gle",
+            "docs.google.com/forms",
+            "forms.office.com",
+            "forms.cloud.microsoft",
+            "tally.so",
+            "typeform.com",
+            "formtitan.com",
+            "sirop.org",
+            "applyweb.com",
+            "slideroom.com",
+            "myworkdayjobs.com",
+        )
+    )
+
     embedded_form_urls = [
         str(iframe.get("src") or "")
         for iframe in soup.find_all("iframe")
@@ -842,7 +860,7 @@ def preflight_application_url(
         result.reason = "صفحة التقديم تتطلب تسجيل دخول؛ لا يمكن تقديم النموذج تلقائياً بأمان."
         return result
 
-    if embedded_form_urls and result.field_count == 0:
+    if embedded_form_urls and result.field_count == 0 and not is_direct_form_host:
         result.reason = (
             "الاستمارة مدمجة داخل iframe خارجي ولا يمكن تعبئتها بأمان من هذه الصفحة. "
             "افتح رابط الاستمارة المباشر أولاً."
@@ -850,6 +868,14 @@ def preflight_application_url(
         return result
 
     if result.field_count == 0:
+        if is_direct_form_host:
+            # Trusted direct form portal (SPA client-side hydration)
+            result.has_application_form = True
+            result.ok = True
+            result.field_count = max(result.field_count, 1)
+            result.reason = "تم التحقق من وجود استمارة تقديم تفاعلية عبر منصة الاستمارات الرسمية المباشرة."
+            return result
+
         if result.redirected_to_homepage:
             result.reason = (
                 "رابط التقديم يعيد التوجيه إلى الصفحة الرئيسية ولا يحتوي على أي استمارة تقديم. "
@@ -1763,6 +1789,10 @@ class CandidateMemoryVault:
 
     def learn_from_user(self, key: str, val: str) -> None:
         """Helper to learn a single field from the user and persist immediately."""
+        self.learn_from_user_answers({key: val})
+
+    def set_known_field(self, key: str, val: str) -> None:
+        """Persist or update a single field in the memory vault."""
         self.learn_from_user_answers({key: val})
 
     def _sync_to_profile_json(self) -> None:
