@@ -16,6 +16,16 @@ from typst_agentic_cv_engine import (
     MasterProfileManager,
 )
 
+PRIVATE_MATRIC = (
+    MasterProfileManager().data.get("education", {}).get("matric_number", "") or ""
+)
+
+
+def _assert_no_matric(text: str) -> None:
+    if PRIVATE_MATRIC:
+        assert PRIVATE_MATRIC not in text
+
+
 def test_is_cv_required_gatekeeper():
     # Beach cleanup / simple community form -> False
     beach_opp = {
@@ -74,7 +84,7 @@ def test_base_reference_cv_synthesis_and_sanitization():
     assert "3.53" in full_text
 
     # MUST NOT contain private or internal IDs like matric number or t-shirt size, and omit GitHub
-    assert "***REMOVED-MATRIC***" not in full_text
+    assert _assert_no_matric(full_text) is None
     assert "Matric" not in full_text
     assert "tshirt" not in full_text.lower()
     assert "apparel" not in full_text.lower()
@@ -101,7 +111,7 @@ def test_opportunity_tailored_cv_adapts_without_private_ids():
     assert "CALTECH" in caltech_text
     assert "github.com" not in caltech_text  # Strict User Directive: GitHub omitted by default unless mandated!
     assert "PyTorch" in caltech_text
-    assert "***REMOVED-MATRIC***" not in caltech_text
+    assert _assert_no_matric(caltech_text) is None
     assert "Camping" not in caltech_text  # Irrelevant outdoor skills excluded from research lab
 
     # 2. Community Volunteering & Education (SOLS 24/7) -> Must NOT have GitHub, must highlight pedagogy/mentoring
@@ -124,7 +134,7 @@ def test_opportunity_tailored_cv_adapts_without_private_ids():
     assert "github.com" not in sols_text  # User complaint fixed: No GitHub on community/volunteering vacancies!
     assert "Mentorship" in sols_text or "Mentor" in sols_text
     assert "Digital Literacy" in sols_text or "Digital Inclusion" in sols_text
-    assert "***REMOVED-MATRIC***" not in sols_text
+    assert _assert_no_matric(sols_text) is None
 
     # 3. Explicit Mandatory GitHub Requirement -> ONLY here is GitHub included
     hack_opp = {

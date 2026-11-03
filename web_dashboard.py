@@ -17,17 +17,20 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import hmac
 import json
 import logging
 import os
 import pathlib
+import secrets
 import sys
+import urllib.parse
 from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 import uvicorn
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent
@@ -52,7 +55,34 @@ def _load_local_env() -> None:
 
 _load_local_env()
 
-DASHBOARD_AUTH_TOKEN = os.environ.get("DASHBOARD_AUTH_TOKEN", "").strip()
+DASHBOARD_TOKEN_FILE = BASE_DIR / "data" / "dashboard_token.txt"
+AUTH_COOKIE_NAME = "zco_dashboard_token"
+
+
+def _load_or_create_dashboard_token() -> tuple[str, str]:
+    """Return (token, source). Always yields a non-empty token."""
+    env_token = os.environ.get("DASHBOARD_AUTH_TOKEN", "").strip()
+    if env_token:
+        return env_token, "env"
+    try:
+        if DASHBOARD_TOKEN_FILE.exists():
+            stored = DASHBOARD_TOKEN_FILE.read_text(encoding="utf-8").strip()
+            if len(stored) >= 24:
+                return stored, "file"
+        token = secrets.token_urlsafe(32)
+        DASHBOARD_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        DASHBOARD_TOKEN_FILE.write_text(token + "\n", encoding="utf-8")
+        try:
+            os.chmod(DASHBOARD_TOKEN_FILE, 0o600)
+        except OSError:
+            pass
+        return token, "generated"
+    except OSError:
+        # Last resort: ephemeral token, printed once below.
+        return secrets.token_urlsafe(32), "ephemeral"
+
+
+DASHBOARD_AUTH_TOKEN, DASHBOARD_TOKEN_SOURCE = _load_or_create_dashboard_token()
 
 from database import OpportunityDatabase, OpportunityStatus
 from engines_and_auditor import AutonomousApplicantEngine, CandidateMemoryVault
@@ -72,25 +102,62 @@ logger = logging.getLogger("ZCO-WebDashboard")
 
 app = FastAPI(title="ZCO-Hunter Web Dashboard", version="5.2.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+PUBLIC_PATHS = {"/favicon.ico", "/healthz"}
+
 
 @app.middleware("http")
 async def security_token_middleware(request: Request, call_next):
-    if DASHBOARD_AUTH_TOKEN:
-        token = request.headers.get("X-Dashboard-Token") or request.query_params.get("token")
-        if token != DASHBOARD_AUTH_TOKEN and request.url.path not in ("/favicon.ico",):
-            from fastapi.responses import JSONResponse
-            return JSONResponse(
-                {"status": "error", "message": "Unauthorized. Please provide valid ?token= or X-Dashboard-Token header."},
+    path = request.url.path
+
+    if path in PUBLIC_PATHS:
+        return await call_next(request)
+
+    # Origin check for browser mutations (same-origin only; API clients omit Origin).
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        origin = request.headers.get("origin")
+        if origin:
+            parsed_origin = urllib.parse.urlparse(origin)
+            if parsed_origin.netloc != request.headers.get("host", ""):
+                return JSONResponse(
+                    {"status": "error", "message": "Cross-origin mutation denied."},
+                    status_code=403,
+                )
+
+    supplied = (
+        request.headers.get("X-Dashboard-Token")
+        or request.query_params.get("token")
+        or request.cookies.get(AUTH_COOKIE_NAME)
+        or ""
+    )
+    if not hmac.compare_digest(str(supplied), DASHBOARD_AUTH_TOKEN):
+        if path == "/" or request.headers.get("accept", "").startswith("text/html"):
+            return HTMLResponse(
+                "<html dir='rtl'><body style='font-family:sans-serif;padding:2rem'>"
+                "<h2>🔒 لوحة التحكم محمية</h2>"
+                "<p>افتح الرابط مع التوكن: <code>/?token=YOUR_TOKEN</code></p>"
+                "<p>التوكن محفوظ في <code>data/dashboard_token.txt</code> أو متغير "
+                "<code>DASHBOARD_AUTH_TOKEN</code>.</p></body></html>",
                 status_code=401,
             )
-    return await call_next(request)
+        return JSONResponse(
+            {"status": "error", "message": "Unauthorized. Provide a valid session cookie or X-Dashboard-Token header."},
+            status_code=401,
+        )
+
+    response: Response = await call_next(request)
+    if request.query_params.get("token") == DASHBOARD_AUTH_TOKEN:
+        response.set_cookie(
+            AUTH_COOKIE_NAME,
+            DASHBOARD_AUTH_TOKEN,
+            httponly=True,
+            samesite="strict",
+            secure=request.url.scheme == "https",
+            max_age=60 * 60 * 12,
+        )
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
 
 db = OpportunityDatabase(BASE_DIR / "data" / "opportunities.db")
 vault = CandidateMemoryVault(db)
@@ -108,6 +175,11 @@ class ProfileUpdateRequest(BaseModel):
     cgpa: Optional[str] = None
     matric_number: Optional[str] = None
     github_url: Optional[str] = None
+
+
+@app.get("/healthz")
+async def healthz() -> Dict[str, Any]:
+    return {"status": "ok", "service": "zco-dashboard"}
 
 
 @app.get("/api/status")
@@ -150,8 +222,15 @@ async def get_opportunities(
         if u and not any(agg in u for agg in aggregator_domains):
             s += 100
         st = opp.get("status", "")
-        if st in ("VERIFIED_ELIGIBLE", "APPLIED_AUTOMATICALLY"):
-            s += 50
+        status_priority = {
+            "APPLIED_AUTOMATICALLY": 80,
+            "SUBMITTED_UNCONFIRMED": 70,
+            "READY_FOR_REVIEW": 60,
+            "PAUSED_NEEDS_USER_INPUT": 55,
+            "PAUSED_AT_CAPTCHA": 55,
+            "VERIFIED_ELIGIBLE": 50,
+        }
+        s += status_priority.get(st, 0)
         s += opp.get("id", 0)
         return s
 
@@ -344,8 +423,8 @@ async def approve_opportunity(code: str) -> Dict[str, Any]:
     tailored_cv_info = None
 
     if cv_req:
-        # Autonomously synthesize the deeply tailored Typst CV specifically for this vacancy!
-        cv_res = synthesize_tailored_typst_cv(opp)
+        # Human approval path: synthesize the tailored Typst CV before submitting.
+        cv_res = await run_in_threadpool(synthesize_tailored_typst_cv, opp)
         if cv_res.get("status") == "generated" and cv_res.get("pdf_path"):
             known = vault.get_known_fields()
             known["cv_pdf_path"] = str(cv_res["pdf_path"])
@@ -355,16 +434,23 @@ async def approve_opportunity(code: str) -> Dict[str, Any]:
                 "domain_focus": cv_res["domain_focus"],
                 "ats_score": cv_res["ats_score"],
             }
+        else:
+            return {
+                "status": "failed",
+                "opportunity_code": code,
+                "cv_tailored_info": cv_res,
+                "message": "تعذر توليد السيرة الذاتية المطلوبة؛ لم يتم تقديم الطلب.",
+            }
     else:
-        # Opportunity does not require CV -> clear from vault
-        known = vault.get_known_fields()
-        known.pop("cv_pdf_path", None)
+        # Opportunity does not require CV -> clear it from the payload.
         tailored_cv_info = {"generated": False, "reason": cv_reason}
 
-    # Attempt application with the filled vault
-    res = applicant.attempt_auto_application(opp)
+    # Explicit user approval via dashboard: Submit is allowed for this one request.
+    res = await run_in_threadpool(
+        applicant.attempt_auto_application, opp, True
+    )
     return {
-        "status": "success",
+        "status": res.get("application_status", "unknown"),
         "opportunity_code": code,
         "cv_tailored_info": tailored_cv_info,
         "result": res,
@@ -433,7 +519,7 @@ async def trigger_crawl_cycle(background_tasks: BackgroundTasks) -> Dict[str, An
 
     async def _run():
         crawler = AsyncOpportunityCrawler(db=db)
-        await crawler.run_single_cycle(include_curated_seed=True)
+        await crawler.run_single_cycle(include_curated_seed=False)
         controller.run_six_hour_batch_audit(window_hours=24.0, auto_apply=False)
 
     background_tasks.add_task(_run)
@@ -837,7 +923,36 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             document.getElementById('stat-ai').innerText = opps.filter(o => o.category_tag === 'AI_TECH' || o.category_tag === 'SCHOLARSHIPS').length;
         }
 
+        function escHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, ch => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[ch]));
+        }
+
+        function safeHttpUrl(value) {
+            try {
+                const url = new URL(String(value || ''), window.location.origin);
+                if (url.protocol === 'http:' || url.protocol === 'https:') return url.href;
+            } catch (e) {}
+            return '';
+        }
+
+        function safeCode(value) {
+            return String(value || '').replace(/[^A-Za-z0-9_-]/g, '');
+        }
+
         function renderOpportunityCard(opp) {
+            const rawCode = safeCode(opp.opportunity_code);
+            const code = escHtml(rawCode);
+            const title = escHtml(opp.title);
+            const organizer = escHtml(opp.organizer);
+            const city = escHtml(opp.location_city);
+            const country = escHtml(opp.location_country);
+            const categoryLabel = escHtml(opp.category_label_ar);
+            const coverage = escHtml(opp.financial_coverage_ar);
+            const explanation = escHtml(opp.explanation_ar);
+            const matchScore = Number.isFinite(Number(opp.match_score)) ? Number(opp.match_score) : 0;
+            const applyUrl = safeHttpUrl(opp.apply_url);
             const isMY = opp.is_inside_malaysia;
             const locationBadge = isMY
                 ? `<span class="px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-[11px] font-semibold"><i class="fa-solid fa-map-pin ml-1"></i>داخل ماليزيا (سارية بإقامة UTM)</span>`
@@ -850,6 +965,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             let statusBadge = `<span class="px-2 py-0.5 bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 rounded-md text-[10px] font-bold">بانتظار قرارك</span>`;
             if (opp.status === 'APPLIED_AUTOMATICALLY') {
                 statusBadge = `<span class="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-md text-[10px] font-bold">✅ تم التقديم</span>`;
+            } else if (opp.status === 'SUBMITTED_UNCONFIRMED') {
+                statusBadge = `<span class="px-2 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-md text-[10px] font-bold">⚠️ أُرسل بانتظار تأكيد</span>`;
+            } else if (opp.status === 'READY_FOR_REVIEW') {
+                statusBadge = `<span class="px-2 py-0.5 bg-sky-500/10 text-sky-400 border border-sky-500/20 rounded-md text-[10px] font-bold">📝 جاهز للمراجعة</span>`;
+            } else if (opp.status === 'PAUSED_AT_CAPTCHA' || opp.status === 'APPLICATION_FAILED') {
+                statusBadge = `<span class="px-2 py-0.5 bg-orange-500/10 text-orange-400 border border-orange-500/20 rounded-md text-[10px] font-bold">🛠 يحتاج تدخلاً</span>`;
             } else if (opp.status === 'DECLINED_BY_USER') {
                 statusBadge = `<span class="px-2 py-0.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-md text-[10px] font-bold">مستبعد</span>`;
             }
@@ -860,22 +981,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     <!-- Header Badges -->
                     <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
                         <div class="flex items-center space-x-2 space-x-reverse">
-                            <span class="text-xs font-mono font-bold text-gray-400 bg-gray-800 px-2 py-0.5 rounded-md border border-gray-700">${opp.opportunity_code}</span>
-                            <span class="text-xs font-semibold text-indigo-400">${opp.category_label_ar}</span>
+                            <span class="text-xs font-mono font-bold text-gray-400 bg-gray-800 px-2 py-0.5 rounded-md border border-gray-700">${code}</span>
+                            <span class="text-xs font-semibold text-indigo-400">${categoryLabel}</span>
                         </div>
                         <div class="flex items-center space-x-2 space-x-reverse">
                             ${statusBadge}
-                            <span class="text-xs font-black text-blue-400 bg-blue-900/40 px-2.5 py-0.5 rounded-lg border border-blue-800">🎯 ${opp.match_score}% تطابق</span>
+                            <span class="text-xs font-black text-blue-400 bg-blue-900/40 px-2.5 py-0.5 rounded-lg border border-blue-800">🎯 ${matchScore}% تطابق</span>
                         </div>
                     </div>
 
                     <!-- Title -->
-                    <h3 class="text-lg font-bold text-white mb-2 leading-snug">${opp.title}</h3>
+                    <h3 class="text-lg font-bold text-white mb-2 leading-snug">${title}</h3>
 
                     <!-- Organizer & Location & CV Requirement -->
                     <div class="flex flex-wrap items-center gap-2 text-xs text-gray-400 mb-3">
-                        <span><i class="fa-solid fa-building-columns text-gray-500 ml-1"></i>${opp.organizer}</span>
-                        <span><i class="fa-solid fa-location-dot text-gray-500 ml-1"></i>${opp.location_city ? opp.location_city + '، ' : ''}${opp.location_country}</span>
+                        <span><i class="fa-solid fa-building-columns text-gray-500 ml-1"></i>${organizer}</span>
+                        <span><i class="fa-solid fa-location-dot text-gray-500 ml-1"></i>${city ? city + '، ' : ''}${country}</span>
                         ${locationBadge}
                         ${cvBadge}
                     </div>
@@ -884,7 +1005,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     <div class="bg-gray-800/70 border border-emerald-500/20 p-3 rounded-xl mb-3 flex items-start space-x-2 space-x-reverse">
                         <i class="fa-solid fa-gift text-emerald-400 mt-0.5 text-sm"></i>
                         <div class="text-xs text-emerald-300 font-semibold leading-relaxed">
-                            ${opp.financial_coverage_ar}
+                            ${coverage}
                         </div>
                     </div>
 
@@ -894,28 +1015,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                             <i class="fa-solid fa-lightbulb"></i>
                             <span>شرح مبسط عن الفرصة:</span>
                         </div>
-                        <p>${opp.explanation_ar}</p>
+                        <p>${explanation}</p>
                     </div>
                 </div>
 
                 <!-- Action Toolbar (Without separate manual CV button) -->
                 <div class="border-t border-gray-800/80 pt-4 mt-2 flex flex-wrap items-center justify-between gap-2">
                     <div class="flex flex-wrap items-center gap-2">
-                        <button onclick="approveOpp('${opp.opportunity_code}')" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 space-x-reverse shadow transition">
+                        <button onclick="approveOpp('${rawCode}')" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 space-x-reverse shadow transition">
                             <i class="fa-solid fa-check"></i>
                             <span>موافقة وتقديم</span>
                         </button>
-                        <button onclick="openKitModal('${opp.opportunity_code}')" class="px-3.5 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-xl text-xs font-semibold flex items-center space-x-1.5 space-x-reverse transition">
+                        <button onclick="openKitModal('${rawCode}')" class="px-3.5 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-xl text-xs font-semibold flex items-center space-x-1.5 space-x-reverse transition">
                             <i class="fa-solid fa-envelope-open-text"></i>
                             <span>خطاب الدافع والمراجعة</span>
                         </button>
                     </div>
 
                     <div class="flex items-center space-x-2 space-x-reverse">
-                        <a href="${opp.apply_url}" target="_blank" class="p-2 text-gray-400 hover:text-blue-400 text-sm transition" title="فتح الإعلان الرسمي">
-                            <i class="fa-solid fa-arrow-up-right-from-square"></i>
-                        </a>
-                        <button onclick="declineOpp('${opp.opportunity_code}')" class="p-2 text-gray-400 hover:text-red-400 text-sm transition" title="استبعاد الفرصة">
+                        ${applyUrl ? `<a href="${applyUrl}" target="_blank" rel="noopener noreferrer" class="p-2 text-gray-400 hover:text-blue-400 text-sm transition" title="فتح الإعلان الرسمي"><i class="fa-solid fa-arrow-up-right-from-square"></i></a>` : ''}
+                        <button onclick="declineOpp('${rawCode}')" class="p-2 text-gray-400 hover:text-red-400 text-sm transition" title="استبعاد الفرصة">
                             <i class="fa-solid fa-trash-can"></i>
                         </button>
                     </div>
@@ -925,14 +1044,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         }
 
         async function approveOpp(code) {
+            code = safeCode(code);
+            if (!code) return;
             if (!confirm(`هل أنت متأكد من رغبتك بالموافقة على التقديم للفرصة ${code}؟`)) return;
             try {
-                const res = await fetch(`/api/opportunities/${code}/approve`, { method: 'POST' });
+                const res = await fetch(`/api/opportunities/${encodeURIComponent(code)}/approve`, { method: 'POST' });
                 const data = await res.json();
-                if (data.cv_tailored_info && data.cv_tailored_info.generated) {
-                    alert(`✅ تم صياغة سيرة مخصصة بالكامل تتماشى مع معايير الشاغر وإرفاقها وإرسال طلب التقديم بنجاح! كود الفرصة: ${code}`);
+                if (!res.ok) {
+                    alert(`⚠️ تعذر التقديم: ${data.detail || data.message || res.status}`);
+                    return;
+                }
+                if (data.status === 'APPLIED_AUTOMATICALLY') {
+                    alert(`✅ تم التقديم بتأكيد رسمي. كود الفرصة: ${code}`);
+                } else if (data.status === 'SUBMITTED_UNCONFIRMED') {
+                    alert(`⚠️ تم الضغط على Submit لكن لا يوجد تأكيد رسمي بعد. الحالة: ${data.status}. كود الفرصة: ${code}`);
+                } else if (data.status === 'PAUSED_NEEDS_USER_INPUT') {
+                    alert(`⏸️ الطلب متوقف بانتظار بيانات إضافية. كود الفرصة: ${code}`);
                 } else {
-                    alert(`✅ تم التقديم بالاستمارة المباشرة بنجاح! كود الفرصة: ${code}`);
+                    alert(`ℹ️ الحالة: ${data.status}. لم يتم تأكيد أي تقديم. كود الفرصة: ${code}`);
                 }
                 loadOpportunities();
             } catch (err) {
@@ -941,9 +1070,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         }
 
         async function declineOpp(code) {
+            code = safeCode(code);
+            if (!code) return;
             if (!confirm(`هل تريد استبعاد الفرصة ${code}؟`)) return;
             try {
-                await fetch(`/api/opportunities/${code}/decline`, { method: 'POST' });
+                await fetch(`/api/opportunities/${encodeURIComponent(code)}/decline`, { method: 'POST' });
                 loadOpportunities();
             } catch (err) {
                 console.error(err);
@@ -951,8 +1082,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         }
 
         async function openKitModal(code) {
+            code = safeCode(code);
+            if (!code) return;
             try {
-                const res = await fetch(`/api/opportunities/${code}/kit`);
+                const res = await fetch(`/api/opportunities/${encodeURIComponent(code)}/kit`);
                 const kit = await res.json();
 
                 document.getElementById('modal-kit-title').innerText = kit.title;
@@ -1083,6 +1216,11 @@ def main() -> None:
     args = parser.parse_args()
 
     logger.info("Starting ZCO Web Dashboard on http://%s:%d ...", args.host, args.port)
+    logger.info("Dashboard auth token source: %s", DASHBOARD_TOKEN_SOURCE)
+    if DASHBOARD_TOKEN_SOURCE == "generated":
+        logger.info("Generated a new dashboard token at %s (chmod 600).", DASHBOARD_TOKEN_FILE)
+    elif DASHBOARD_TOKEN_SOURCE == "ephemeral":
+        logger.warning("Could not persist token to disk. Use this token: %s", DASHBOARD_AUTH_TOKEN)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 

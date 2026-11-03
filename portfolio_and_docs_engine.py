@@ -25,7 +25,7 @@ BASE_DIR = pathlib.Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 DOCS_DIR = DATA_DIR / "documents"
 CONFIG_DIR = BASE_DIR / "config"
-PORTFOLIO_FILE = DATA_DIR / "comprehensive_portfolio.json"
+PORTFOLIO_FILE = CONFIG_DIR / "comprehensive_portfolio.json"
 CV_PDF_FILE = DOCS_DIR / "cv_mohammad_mahdi.pdf"
 CV_MD_FILE = DOCS_DIR / "cv_mohammad_mahdi.md"
 
@@ -34,23 +34,23 @@ AUTHENTIC_PORTFOLIO: Dict[str, Any] = {
     "personal": {
         "full_name_en": "Mohammad Mahdi Alsalkadi",
         "full_name_ar": "محمد مهدي السلقدي",
-        "email": "***REMOVED-EMAIL***",
-        "personal_email": "***REMOVED-EMAIL***",
-        "phone_my": "***REMOVED-PHONE***",  # Can be updated by user via telegram anytime
-        "phone_kw": "***REMOVED-PHONE***",
-        "date_of_birth": "2006-10-25",
+        "email": "candidate@example.com",
+        "personal_email": "candidate@example.com",
+        "phone_my": "+60 11-0000 0000",
+        "phone_kw": "+000 0000 0000",
+        "date_of_birth": "2000-01-01",
         "age": 20,
         "nationality": "Syrian",
         "nationality_ar": "سوري",
-        "passport_number": "***REMOVED-PASSPORT***",
+        "passport_number": "N00000000",
         "residency_kuwait": "Valid Kuwait Residency (Iqama)",
         "malaysia_pass": "Valid International Student Pass (UTM)",
-        "address_my": "***REMOVED-ADDRESS***",
+        "address_my": "Kuala Lumpur, Malaysia",
         "address_kw": "State of Kuwait (Valid Residency)",
         "departure_airport": "KUL (Kuala Lumpur International Airport)",
-        "linkedin_url": "https://linkedin.com/in/mahdialsalkadi",
-        "github_url": "https://github.com/mahdialsalkadi",
-        "portfolio_url": "https://github.com/mahdialsalkadi",
+        "linkedin_url": "",
+        "github_url": "",
+        "portfolio_url": "",
         "dietary_preference": "Halal (حلال)",
         "tshirt_size": "M (Medium)",
         "swimming_fitness": "Capable swimmer, enthusiastic outdoor camper & trekker",
@@ -64,10 +64,10 @@ AUTHENTIC_PORTFOLIO: Dict[str, Any] = {
         "degree_ar": "بكالوريوس علوم الحاسوب (الذكاء الاصطناعي) مع مرتبة الشرف",
         "academic_year": "Year 1 (Undergraduate)",
         "academic_year_ar": "السنة الأولى (بكالوريوس)",
-        "matric_number": "***REMOVED-MATRIC***",
+        "matric_number": "A00000000",
         "cgpa": "3.53 / 4.00",
         "graduation_expected": "2028",
-        "english_proficiency": "IELTS Academic (Band 5.5)",
+        "english_proficiency": "",
         "key_coursework": [
             "Programming Fundamentals (Python / C++)",
             "Discrete Structures",
@@ -181,30 +181,21 @@ class PortfolioManager:
         return self.data
 
     def _ensure_updated_fields(self) -> None:
-        """Merges new keys from AUTHENTIC_PORTFOLIO into existing data."""
-        p = self.data.setdefault("personal", {})
-        edu = self.data.setdefault("education", {})
-        
-        # Always prioritize verified user inputs
-        p["full_name_en"] = "Mohammad Mahdi Alsalkadi"
-        p["full_name_ar"] = "محمد مهدي السلقدي"
-        p["nationality"] = "Syrian"
-        p["date_of_birth"] = "2006-10-25"
-        p["address_my"] = "***REMOVED-ADDRESS***"
-        p["email"] = "***REMOVED-EMAIL***"
-        p["github_url"] = "https://github.com/mahdialsalkadi"
-        p["tshirt_size"] = "M (Medium)"
-        p["swimming_fitness"] = "Capable swimmer, enthusiastic outdoor camper & trekker"
+        """Merge new keys from AUTHENTIC_PORTFOLIO without overwriting user edits."""
+        import copy
 
-        edu["current_institution"] = "Universiti Teknologi Malaysia (UTM)"
-        edu["degree"] = "Bachelor of Computer Science (Artificial Intelligence) with Honours"
-        edu["matric_number"] = "***REMOVED-MATRIC***"
-        edu["cgpa"] = "3.53 / 4.00"
-        edu["english_proficiency"] = "IELTS Academic (Band 5.5)"
+        def _merge_missing(target: Dict[str, Any], defaults: Dict[str, Any]) -> None:
+            for key, default_value in defaults.items():
+                if key not in target:
+                    target[key] = copy.deepcopy(default_value)
+                elif isinstance(default_value, dict) and isinstance(target.get(key), dict):
+                    _merge_missing(target[key], default_value)
 
-        self.data["skills"] = AUTHENTIC_PORTFOLIO["skills"]
-        self.data["projects"] = AUTHENTIC_PORTFOLIO["projects"]
-        self.save()
+        for section, defaults in AUTHENTIC_PORTFOLIO.items():
+            if section not in self.data:
+                self.data[section] = copy.deepcopy(defaults)
+            elif isinstance(defaults, dict) and isinstance(self.data.get(section), dict):
+                _merge_missing(self.data[section], defaults)
 
     def save(self) -> None:
         """Persists portfolio data to JSON and syncs with candidate_profile.json."""
@@ -238,34 +229,36 @@ class PortfolioManager:
         edu = self.data.get("education", {})
 
         mappings = [
-            ("full_name", p.get("full_name_en", "Mohammad Mahdi Alsalkadi"), "identity", "الاسم الكامل بالإنجليزية"),
-            ("full_name_ar", p.get("full_name_ar", "محمد مهدي السلقدي"), "identity", "الاسم الكامل بالعربية"),
-            ("age", str(p.get("age", 20)), "identity", "العمر"),
-            ("date_of_birth", p.get("date_of_birth", "2006-10-25"), "identity", "تاريخ الميلاد"),
-            ("nationality", f"{p.get('nationality', 'Syrian')} (SY)", "jurisdiction", "الجنسية"),
+            ("full_name", p.get("full_name_en", ""), "identity", "الاسم الكامل بالإنجليزية"),
+            ("full_name_ar", p.get("full_name_ar", ""), "identity", "الاسم الكامل بالعربية"),
+            ("age", str(p.get("age", "") or ""), "identity", "العمر"),
+            ("date_of_birth", p.get("date_of_birth", ""), "identity", "تاريخ الميلاد"),
+            ("nationality", (f"{p.get('nationality')} ({p.get('nationality_code', 'SY')})" if p.get("nationality") else ""), "jurisdiction", "الجنسية"),
             ("primary_residency_country", "Malaysia (MY)", "jurisdiction", "دولة الإقامة الأساسية"),
-            ("residential_address_my", p.get("address_my", "***REMOVED-ADDRESS***"), "contact", "عنوان السكن في كوالالمبور"),
-            ("malaysia_visa_type", p.get("malaysia_pass", "Valid International Student Pass (UTM)"), "jurisdiction", "نوع التأشيرة في ماليزيا"),
+            ("residential_address_my", p.get("address_my", ""), "contact", "عنوان السكن في كوالالمبور"),
+            ("malaysia_visa_type", p.get("malaysia_pass", ""), "jurisdiction", "نوع التأشيرة في ماليزيا"),
             ("secondary_residency_country", "Kuwait (Valid Residency / Iqama)", "jurisdiction", "دولة الإقامة الثانوية (الكويت)"),
-            ("university_name", edu.get("current_institution", "Universiti Teknologi Malaysia (UTM)"), "academic", "اسم الجامعة"),
-            ("degree_and_major", edu.get("degree", "Bachelor of Computer Science (Artificial Intelligence) with Honours"), "academic", "الدرجة والتخصص"),
-            ("academic_year", edu.get("academic_year", "Year 1 (Undergraduate)"), "academic", "المرحلة الدراسية"),
-            ("utm_matric_number", edu.get("matric_number", "***REMOVED-MATRIC***"), "academic", "الرقم الجامعي (UTM Matric)"),
-            ("current_cgpa", edu.get("cgpa", "3.53 / 4.00"), "academic", "المعدل التراكمي (CGPA)"),
-            ("english_proficiency", edu.get("english_proficiency", "IELTS Academic (Band 5.5)"), "academic", "مستوى اللغة الإنجليزية"),
-            ("departure_airport", p.get("departure_airport", "KUL"), "logistics", "مطار المغادرة المفضل"),
-            ("email_address", p.get("email", "***REMOVED-EMAIL***"), "contact", "البريد الإلكتروني الرسمي"),
-            ("phone_whatsapp_my", p.get("phone_my", "***REMOVED-PHONE***"), "contact", "رقم الهاتف / واتساب"),
-            ("github_or_portfolio_url", p.get("github_url", "https://github.com/mahdialsalkadi"), "academic", "رابط GitHub أو المعرض البرمجي"),
-            ("dietary_preference", p.get("dietary_preference", "Halal"), "logistics", "التفضيلات الغذائية"),
-            ("tshirt_and_gear_size", p.get("tshirt_size", "M"), "logistics", "مقاس القميص والمعدات الميدانية"),
-            ("swimming_and_outdoor_fitness", p.get("swimming_fitness", "Capable swimmer, enthusiastic outdoor camper & trekker"), "outdoor", "اللياقة الميدانية والسباحة والتخييم"),
+            ("university_name", edu.get("current_institution", ""), "academic", "اسم الجامعة"),
+            ("degree_and_major", edu.get("degree", ""), "academic", "الدرجة والتخصص"),
+            ("academic_year", edu.get("academic_year", ""), "academic", "المرحلة الدراسية"),
+            ("utm_matric_number", edu.get("matric_number", ""), "academic", "الرقم الجامعي (UTM Matric)"),
+            ("current_cgpa", edu.get("cgpa", ""), "academic", "المعدل التراكمي (CGPA)"),
+            ("english_proficiency", edu.get("english_proficiency", ""), "academic", "مستوى اللغة الإنجليزية"),
+            ("departure_airport", p.get("departure_airport", ""), "logistics", "مطار المغادرة المفضل"),
+            ("email_address", p.get("email", ""), "contact", "البريد الإلكتروني الرسمي"),
+            ("phone_whatsapp_my", p.get("phone_my", ""), "contact", "رقم الهاتف / واتساب"),
+            ("github_or_portfolio_url", p.get("github_url", ""), "academic", "رابط GitHub أو المعرض البرمجي"),
+            ("dietary_preference", p.get("dietary_preference", ""), "logistics", "التفضيلات الغذائية"),
+            ("tshirt_and_gear_size", p.get("tshirt_size", ""), "logistics", "مقاس القميص والمعدات الميدانية"),
+            ("swimming_and_outdoor_fitness", p.get("swimming_fitness", ""), "outdoor", "اللياقة الميدانية والسباحة والتخييم"),
             ("cv_pdf_path", str(CV_PDF_FILE), "documents", "مسار ملف السيرة الذاتية PDF"),
         ]
 
         cursor = db_conn.cursor()
         now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
         for key, val, cat, label_ar in mappings:
+            if val in (None, ""):
+                continue
             cursor.execute(
                 """
                 INSERT INTO candidate_vault (field_key, field_label_ar, field_value, category, source, updated_at)

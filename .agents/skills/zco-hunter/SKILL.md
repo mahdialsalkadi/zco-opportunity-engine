@@ -81,7 +81,7 @@ flowchart TD
 ### Iron Rules for All Output
 1. **Zero Hallucination:** Never fabricate GPA, degrees, awards, or dates. All claims must anchor to `config/candidate_profile.json` or `config/master_profile.yaml`.
 2. **Strict Sanitization:**
-   * **Matric Number (`***REMOVED-MATRIC***`):** Internal university ID only. Strictly excluded from all public and tailored CVs.
+   * **Matric Number:** Internal university ID only. Strictly excluded from all public and tailored CVs.
    * **Apparel / T-Shirt Sizes (`M`), Passport Numbers, Home Apartment Addresses:** Retained exclusively in the internal Memory Vault for logistics form auto-filling; never exposed on CV documents.
 3. **GitHub Privacy Directive:**
    * Candidate's GitHub contains experimental/exploratory repositories.

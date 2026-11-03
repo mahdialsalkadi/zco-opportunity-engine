@@ -127,6 +127,7 @@ def test_spa_google_forms_aria_inspection():
 def test_telegram_bot_reply_to_learn_flow(temp_db):
     """Verify that replying to a missing-field message updates the vault and resumes application."""
     bot_service = ZCOTelegramBotService(db_path=temp_db.db_path)
+    bot_service.admin_chat_ids = [12345]
 
     # Ingest a test opportunity
     temp_db.ingest_raw_opportunity(

@@ -5,7 +5,7 @@
 [![Typst](https://img.shields.io/badge/typesetting-Typst%200.12+-239dad.svg)](https://typst.app/)
 [![Protocol](https://img.shields.io/badge/MCP-FastMCP-purple.svg)](https://modelcontextprotocol.io/)
 [![Database](https://img.shields.io/badge/database-SQLite%20WAL-lightgrey.svg)](https://www.sqlite.org/)
-[![Tests](https://img.shields.io/badge/tests-21%2F21%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-35%2F35%20passed-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An enterprise-grade, autonomous opportunity auditing, memory-learning, and programmatic application system engineered specifically for **Mohammad Mahdi Alsalkadi** (Syrian national, 1st-year Artificial Intelligence undergraduate at Universiti Teknologi Malaysia with honours, CGPA 3.53, Kuwait residency).
@@ -89,7 +89,7 @@ The CV engine separates raw candidate data from visual presentation, generating 
 4. **Layer 4: Closed-Loop Verification (`ClosedLoopVerifier`):** Programmatically inspects the compiled PDF using `pypdf`. If the document exceeds 1 page, it automatically triggers a concise-mode pass to enforce an exact 1-page boundary.
 
 ### Strict Privacy & Sanitization Directives
-* **Matric Number (`***REMOVED-MATRIC***`):** Omitted from all CV outputs.
+* **Matric Number:** Omitted from all CV outputs.
 * **Apparel Sizes & Private Data:** T-shirt sizes (`M`), passport numbers, and apartment addresses remain internal to the Memory Vault for form auto-filling; never exposed on public CVs.
 * **GitHub Policy:** Omitted from all CVs and motivation letters by default. Only included if the host organization explicitly and mandatorily demands a code repository link (`mandatory github repository required`).
 
@@ -102,13 +102,13 @@ The server (`server.py`) exposes 9 typed tools for external AI agents:
 | Tool Name | Parameters | Description |
 |---|---|---|
 | `get_crawler_daemon_status` | none | Returns daemon heartbeat, queue status, and Memory Vault fields. |
-| `run_six_hour_batch_audit` | `window_hours: float = 6.0` | Audits raw items against $0 cost and Syrian/UTM/Kuwait eligibility. |
-| `provide_missing_answers_and_resume` | `answers_json: str` | Persists novel answers into SQLite Vault and resumes paused applications. |
+| `run_six_hour_batch_audit` | `window_hours: float = 6.0, allow_submit: bool = false` | Audits raw items against $0 cost and Syrian/UTM/Kuwait eligibility, then prepares drafts. Submit clicks require explicit opt-in. |
+| `provide_missing_answers_and_resume` | `answers_json: str, allow_submit: bool = false` | Persists novel answers into SQLite Vault and resumes paused applications; submission stays opt-in. |
 | `render_categorized_dashboard` | `location_scope: str, track_filter: str` | Generates verified opportunities matrix in Markdown. |
 | `prepare_application_kit` | `opportunity_code: str` | Returns submission package, SOP, receipt, and audit breakdown. |
 | `synthesize_tailored_cv` | `opportunity_code: str, force: bool = false` | Generates vacancy-tailored 1-page ATS Typst CV. |
 | `synthesize_base_reference_cv` | `force: bool = false` | Generates the gold-standard Master Reference 1-page Typst CV. |
-| `approve_and_submit_opportunity` | `opportunity_code: str` | Evaluates CV requirement, synthesizes CV if needed, and submits. |
+| `approve_and_submit_opportunity` | `opportunity_code: str` | Human approval action: evaluates CV requirement, synthesizes CV if needed, and submits. Only a real confirmation reference is reported as applied. |
 | `inspect_vault_profile` | none | Returns all candidate fields stored in the Memory Vault. |
 
 ---
@@ -129,9 +129,13 @@ pip install -r requirements.txt
 
 # 3. Configure environment
 cp .env.example .env
-# Edit .env with your Telegram bot token if running the bot
+# - Set TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_CHAT_IDS to enable the private bot.
+#   The bot refuses to start without at least one admin chat ID.
+# - Leave DASHBOARD_AUTH_TOKEN blank to auto-generate data/dashboard_token.txt
+#   (chmod 600), or set it explicitly for remote access.
+# - Keep ZCO_AUTO_SUBMIT=0 unless you explicitly want unattended Submit clicks.
 
-# 4. Run the full automated test suite (17 unit & integration tests)
+# 4. Run the full automated test suite (35 unit & integration tests)
 pytest tests/ -v
 
 # 5. Verify Master Reference Typst CV synthesis (Strictly 1 Page, 0 Matric, 0 GitHub)
@@ -149,16 +153,26 @@ python3 supervisor.py --status
 
 ---
 
-## 5. ZCO-Hunter v4.2 Field-Ready Enhancements
+## 5. Safety & Privacy Defaults (Phase 0 Hardening)
+
+* **Private by default:** the web dashboard requires an HttpOnly session cookie (obtained via `/?token=...`) or the `X-Dashboard-Token` header. Wildcard CORS is removed, mutation requests are same-origin checked, and the only unauthenticated routes are `/healthz` and `/favicon.ico`.
+* **No unattended submission by default:** batch audits prepare applications and mark them `READY_FOR_REVIEW`. Clicking Submit requires an explicit human approval action or the `ZCO_AUTO_SUBMIT=1` opt-in. The CLI flag is `--auto-submit`.
+* **Honest application states:** only a real confirmation reference produces `APPLIED_AUTOMATICALLY`. A clicked-but-unconfirmed submit becomes `SUBMITTED_UNCONFIRMED`; drafts become `READY_FOR_REVIEW`; failures become `APPLICATION_FAILED`. Legacy synthetic `SUB-...` / `DOM-SUB-...` receipts can be downgraded with `python scripts/quarantine_unverified_submissions.py --apply`.
+* **Telegram admin allow-list:** every command and callback is denied unless the chat ID is listed in `TELEGRAM_ADMIN_CHAT_IDS`. Scraped text is HTML-escaped before rendering, and bot tokens are redacted from logs.
+* **Private files stay private:** `config/candidate_profile.json`, `config/master_profile.yaml`, `config/comprehensive_portfolio.json`, generated CVs, screenshots, dashboards, and the SQLite database are ignored by git. Demo/testbed seeds are opt-in via `async_crawler.py --seed-demo`.
+
+---
+
+## 6. ZCO-Hunter v4.2 Field-Ready Enhancements
 
 * **Two-Hop Link Resolver (`async_crawler.py`):** Automatically traverses intermediary opportunity aggregators (OpportunityDesk, YouthOp, OpportunitiesCorners) to extract rich eligibility and funding perks from the article body, detecting the official external application URL (Google Forms, Airtable, university portal) under *"Apply Now"* / *"Official Link"*.
 * **SPA Form Adapter (`engines_and_auditor.py`):** Native DOM/ARIA traversal for modern Single Page Application forms (Google Forms, Airtable, Typeform, Microsoft Forms). Inspects `[role="listitem"]`, maps container headings `[role="heading"]` directly to candidate vault keys, and interacts with ARIA inputs (`role="radio"`, `role="checkbox"`, `[jsname]`).
-* **Reply-to-Learn Interaction (`telegram_bot.py`):** When an application pauses for a first-time field (`PAUSED_NEEDS_USER_INPUT`), the bot sends an interactive prompt to Telegram ([@Uiii007bot](https://t.me/Uiii007bot)). Replying directly to that message permanently commits the answer to `CandidateMemoryVault` and immediately resumes submission with photo receipts.
+* **Reply-to-Learn Interaction (`telegram_bot.py`):** When an application pauses for a first-time field (`PAUSED_NEEDS_USER_INPUT`), the bot sends an interactive prompt to Telegram ([@Uiii007bot](https://t.me/Uiii007bot)). Replying directly to that message permanently commits the answer to `CandidateMemoryVault` and re-prepares the application. It does **not** auto-submit; the admin must press the explicit approve button.
 * **LLM Essay Synthesizer & Persistent QA Bank (`engines_and_auditor.py`):** Produces authentic 250–300 word Statements of Purpose tailored to host organizations, anchoring strictly to candidate's verified background and coursework, cached in the SQLite `learned_qa_bank` table for semantic reuse.
 
 ---
 
-## 6. Repository Directory Layout
+## 7. Repository Directory Layout
 
 ```
 ├── .agents/
@@ -171,9 +185,12 @@ python3 supervisor.py --status
 │   ├── documents/                    # Compiled PDFs
 │   ├── logs/                         # Service execution logs
 │   └── opportunities.db              # SQLite WAL database
+├── scripts/
+│   └── quarantine_unverified_submissions.py  # Dry-run/apply receipt quarantine
 ├── templates/
 │   └── cv_template.typ               # Parametric Typst CV template
 ├── tests/
+│   ├── test_security_phase0.py       # Auth, escaping, receipt honesty regression tests
 │   ├── test_telegram_bot.py          # Bot interactions & card rendering
 │   ├── test_typst_cv_engine.py       # Typst synthesis, 1-page enforcement, sanitization
 │   ├── test_v42_features.py          # Two-hop resolver, Google Forms ARIA, Reply-to-Learn, QA bank
@@ -189,12 +206,13 @@ python3 supervisor.py --status
 ├── web_dashboard.py                  # Real-time web portal (FastAPI + Tailwind)
 ├── .env.example                      # Environment variables template
 ├── .gitignore                        # Git exclusion rules
+├── SECURITY.md                       # Auth, secret-handling, and submission-safety policy
 ├── requirements.txt                  # Python dependencies
 └── README.md                         # Architecture guide & documentation
 ```
 
 ---
 
-## 7. License
+## 8. License
 
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.

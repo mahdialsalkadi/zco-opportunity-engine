@@ -46,8 +46,12 @@ TRACK_LABELS_AR: Dict[str, str] = {
 }
 
 STATUS_BADGES_AR: Dict[str, str] = {
-    OpportunityStatus.APPLIED_AUTOMATICALLY: "تم التقديم تلقائياً",
+    OpportunityStatus.APPLIED_AUTOMATICALLY: "تم التقديم بتأكيد رسمي",
+    OpportunityStatus.SUBMITTED_UNCONFIRMED: "تم الإرسال — بانتظار تأكيد رسمي",
+    OpportunityStatus.READY_FOR_REVIEW: "جاهز للمراجعة والتقديم اليدوي",
     OpportunityStatus.PAUSED_NEEDS_USER_INPUT: "بانتظار استكمال بيانات لأول مرة",
+    OpportunityStatus.PAUSED_AT_CAPTCHA: "متوقف عند CAPTCHA / تسجيل دخول",
+    OpportunityStatus.APPLICATION_FAILED: "فشل تجهيز/تقديم الطلب",
     OpportunityStatus.VERIFIED_ELIGIBLE: "مؤهل وجاهز للتقديم",
 }
 
@@ -72,8 +76,19 @@ class ZCOEngineController:
         return status
 
     def run_six_hour_batch_audit(
-        self, window_hours: float = 6.0, auto_apply: bool = True
+        self,
+        window_hours: float = 6.0,
+        auto_apply: bool = False,
+        allow_submit: Optional[bool] = None,
     ) -> Dict[str, Any]:
+        """Audit queued opportunities and optionally prepare/submit applications.
+
+        ``auto_apply`` only controls whether applications are prepared at all.
+        Clicking Submit additionally requires ``allow_submit=True`` (or the
+        ``ZCO_AUTO_SUBMIT=1`` environment opt-in). The default is draft-only.
+        """
+        if allow_submit is None:
+            allow_submit = os.environ.get("ZCO_AUTO_SUBMIT", "0").strip() == "1"
         batch = self.db.fetch_unprocessed_batch(window_hours=window_hours, limit=200)
         verified_codes: List[str] = []
         rejected_cost: List[Dict[str, str]] = []
@@ -135,7 +150,9 @@ class ZCOEngineController:
 
         application_report: Dict[str, Any] = {}
         if auto_apply:
-            application_report = self.applicant.process_all_pending_applications()
+            application_report = self.applicant.process_all_pending_applications(
+                allow_submit=bool(allow_submit)
+            )
 
         dashboard_file = self.render_categorized_dashboard(
             consolidated_questions=application_report.get("consolidated_questions_for_user", [])
@@ -149,13 +166,20 @@ class ZCOEngineController:
             "rejected_cost_items": rejected_cost,
             "rejected_ineligible_count": len(rejected_ineligible),
             "rejected_ineligible_items": rejected_ineligible,
+            "submit_enabled": bool(auto_apply and allow_submit),
             "autonomous_application_report": application_report,
             "dashboard_path": str(dashboard_file),
         }
 
-    def learn_and_resume_applications(self, user_answers: Dict[str, str]) -> Dict[str, Any]:
+    def learn_and_resume_applications(
+        self,
+        user_answers: Dict[str, str],
+        allow_submit: bool = False,
+    ) -> Dict[str, Any]:
         learn_summary = self.vault.learn_from_user_answers(user_answers)
-        application_report = self.applicant.process_all_pending_applications()
+        application_report = self.applicant.process_all_pending_applications(
+            allow_submit=allow_submit
+        )
         dashboard_file = self.render_categorized_dashboard(
             consolidated_questions=application_report.get("consolidated_questions_for_user", [])
         )
@@ -203,14 +227,16 @@ class ZCOEngineController:
         )
 
         applied_count = status_info["queue_counts"].get(OpportunityStatus.APPLIED_AUTOMATICALLY, 0)
+        unconfirmed_count = status_info["queue_counts"].get(OpportunityStatus.SUBMITTED_UNCONFIRMED, 0)
+        ready_count = status_info["queue_counts"].get(OpportunityStatus.READY_FOR_REVIEW, 0)
         paused_count = status_info["queue_counts"].get(OpportunityStatus.PAUSED_NEEDS_USER_INPUT, 0)
 
         lines: List[str] = [
-            "# لوحة الفرص والتقديم الذاتي عبر المتصفح الحقيقي (ZCO-Engine v4.0 Production Matrix)",
+            "# لوحة الفرص والتجهيز الذاتي عبر المتصفح الحقيقي (ZCO-Engine Production Matrix)",
             "",
             f"* **المرشح:** محمد مهدي (الجنسية: سوري | الإقامة الأكاديمية: ماليزيا - طالب ذكاء اصطناعي سنة أولى في [UTM](https://www.utm.my/) | الإقامة الثانية: الكويت | العمر: 20 سنة)",
-            f"* **آخر دورة فحص وتقديم آلي (6-Hour Batch Audit & Chromium Auto-Apply):** `{now_my_str}`",
-            f"* **حالة التقديم الذاتي:** تم التقديم تلقائياً بالكامل: `{applied_count}` | بانتظار بيانات تُطلب لأول مرة: `{paused_count}` | الحقول المحفوظة في خزنة الذاكرة الدائمة (`CandidateMemoryVault`): `{len(known_vault)} حقل`",
+            f"* **آخر دورة فحص وتجهيز (6-Hour Batch Audit & Chromium Applicant):** `{now_my_str}`",
+            f"* **حالة التقديم:** مؤكد رسمياً: `{applied_count}` | أُرسل بانتظار تأكيد: `{unconfirmed_count}` | جاهز لمراجعة بشرية: `{ready_count}` | بانتظار بيانات تُطلب لأول مرة: `{paused_count}` | الحقول المحفوظة في خزنة الذاكرة الدائمة (`CandidateMemoryVault`): `{len(known_vault)} حقل`",
             f"* **إحصائيات الفلترة:** إجمالي المرصود `{status_info['total_tracked']}` | مرفوض لوجود رسوم/نقص تمويل: `{status_info['queue_counts'].get('REJECTED_COST', 0)}` | مرفوض لعدم تطابق الأهلية: `{status_info['queue_counts'].get('REJECTED_INELIGIBLE', 0)}`",
             "",
         ]
@@ -311,6 +337,10 @@ class ZCOEngineController:
             receipt = json.loads(item.get("submission_receipt_json") or "{}")
             ref = receipt.get("confirmation_ref", "")
             return f"**{badge}** (`{ref}`)"
+        if st == OpportunityStatus.SUBMITTED_UNCONFIRMED:
+            receipt = json.loads(item.get("submission_receipt_json") or "{}")
+            note = receipt.get("notes", "")
+            return f"{badge}" + (f": {note}" if note else "")
         if st == OpportunityStatus.PAUSED_NEEDS_USER_INPUT:
             missing = json.loads(item.get("missing_fields_json") or "[]")
             keys = ", ".join(f"`{m['field_key']}`" for m in missing)
@@ -362,12 +392,20 @@ class ZCOEngineController:
         cv_info = None
         if cv_required:
             cv_res = synthesize_tailored_typst_cv(opp, force=True)
-            if cv_res.get("pdf_path"):
-                self.vault.set_known_field("cv_pdf_path", cv_res["pdf_path"])
-                cv_info = cv_res
-        app_res = self.applicant.attempt_auto_application(opp)
+            if cv_res.get("status") != "generated" or not cv_res.get("pdf_path"):
+                return {
+                    "status": "failed",
+                    "opportunity_code": opportunity_code,
+                    "cv_required": True,
+                    "cv_reason": reason,
+                    "cv_generated": cv_res,
+                    "message": "تعذر توليد السيرة الذاتية المطلوبة؛ لم يتم تقديم الطلب.",
+                }
+            self.vault.set_known_field("cv_pdf_path", cv_res["pdf_path"])
+            cv_info = cv_res
+        app_res = self.applicant.attempt_auto_application(opp, allow_submit=True)
         return {
-            "status": "submitted",
+            "status": app_res.get("application_status", "unknown"),
             "opportunity_code": opportunity_code,
             "cv_required": cv_required,
             "cv_reason": reason,
@@ -395,18 +433,32 @@ def create_mcp_app(controller: ZCOEngineController) -> Any:
             return controller.get_crawler_daemon_status()
 
         @mcp.tool()
-        def run_six_hour_batch_audit(window_hours: float = 6.0) -> Dict[str, Any]:
-            """Audits all RAW_INGESTED items from the last 6 hours AND auto-applies using Headless Chromium & Memory Vault."""
-            return controller.run_six_hour_batch_audit(window_hours=window_hours, auto_apply=True)
+        def run_six_hour_batch_audit(
+            window_hours: float = 6.0, allow_submit: bool = False
+        ) -> Dict[str, Any]:
+            """Audits RAW_INGESTED items and prepares applications from the Memory Vault.
+
+            Submit clicks stay disabled unless ``allow_submit=True`` or the daemon runs
+            with the explicit ``ZCO_AUTO_SUBMIT=1`` opt-in.
+            """
+            return controller.run_six_hour_batch_audit(
+                window_hours=window_hours,
+                auto_apply=True,
+                allow_submit=allow_submit,
+            )
 
         @mcp.tool()
-        def provide_missing_answers_and_resume(answers_json: str) -> Dict[str, Any]:
+        def provide_missing_answers_and_resume(
+            answers_json: str, allow_submit: bool = False
+        ) -> Dict[str, Any]:
             """
             Saves new user-provided answers permanently into CandidateMemoryVault (never asking again)
-            and immediately resumes & submits all paused applications via Headless Chromium!
+            and resumes paused applications. Submission requires ``allow_submit=True``.
             """
             answers_dict = json.loads(answers_json)
-            return controller.learn_and_resume_applications(answers_dict)
+            return controller.learn_and_resume_applications(
+                answers_dict, allow_submit=allow_submit
+            )
 
         @mcp.tool()
         def render_categorized_dashboard(
@@ -482,7 +534,13 @@ def main() -> None:
     parser.add_argument(
         "--audit-batch",
         action="store_true",
-        help="Run the 6-hour batch audit AND autonomous Chromium applicant on all queued items",
+        help="Run the 6-hour batch audit and prepare applications (no submission unless --auto-submit)",
+    )
+    parser.add_argument(
+        "--auto-submit",
+        action="store_true",
+        default=os.environ.get("ZCO_AUTO_SUBMIT", "0").strip() == "1",
+        help="Explicitly allow unattended Submit clicks (default: disabled; env ZCO_AUTO_SUBMIT=1)",
     )
     parser.add_argument(
         "--window-hours",
@@ -550,18 +608,28 @@ def main() -> None:
     if args.daemon_auditor:
         import time
         interval_sec = max(60.0, args.interval_hours * 3600.0)
-        print(f"[{dt.datetime.now(dt.timezone.utc).isoformat()}] Starting 6-Hour Periodic Opportunity Auditor Daemon (interval: {args.interval_hours}h)...", flush=True)
+        print(f"[{dt.datetime.now(dt.timezone.utc).isoformat()}] Starting 6-Hour Periodic Opportunity Auditor Daemon (interval: {args.interval_hours}h, submit={args.auto_submit})...", flush=True)
         while True:
             try:
                 print(f"[{dt.datetime.now(dt.timezone.utc).isoformat()}] Running periodic batch audit...", flush=True)
-                summary = controller.run_six_hour_batch_audit(window_hours=args.interval_hours, auto_apply=True)
-                verified_count = len(summary.get("verified_eligible_codes", []))
+                summary = controller.run_six_hour_batch_audit(
+                    window_hours=args.interval_hours,
+                    auto_apply=True,
+                    allow_submit=args.auto_submit,
+                )
                 audited_count = summary.get("batch_size_audited", 0)
-                applied_count = len(summary.get("applied_codes", []))
-                paused_count = len(summary.get("paused_codes", []))
+                verified_count = summary.get("verified_eligible_count", 0)
+                report = summary.get("autonomous_application_report", {}) or {}
+                applied_count = report.get("applied_automatically_count", 0)
+                unconfirmed_count = report.get("submitted_unconfirmed_count", 0)
+                ready_count = report.get("ready_for_review_count", 0)
+                paused_count = report.get("paused_needs_input_count", 0)
+                failed_count = report.get("application_failed_count", 0)
                 print(
                     f"[{dt.datetime.now(dt.timezone.utc).isoformat()}] Batch audit completed. "
-                    f"Audited: {audited_count} | Eligible: {verified_count} | Auto-applied: {applied_count} | Paused for inputs: {paused_count}",
+                    f"Audited: {audited_count} | Eligible: {verified_count} | "
+                    f"Confirmed applied: {applied_count} | Unconfirmed: {unconfirmed_count} | "
+                    f"Ready for review: {ready_count} | Paused for inputs: {paused_count} | Failed: {failed_count}",
                     flush=True,
                 )
             except Exception as exc:
@@ -591,13 +659,17 @@ def main() -> None:
 
     if args.learn_answers:
         parsed_answers = json.loads(args.learn_answers)
-        res = controller.learn_and_resume_applications(parsed_answers)
+        res = controller.learn_and_resume_applications(
+            parsed_answers, allow_submit=args.auto_submit
+        )
         print(json.dumps(res, indent=2, ensure_ascii=False))
         return
 
     if args.audit_batch:
         summary = controller.run_six_hour_batch_audit(
-            window_hours=args.window_hours, auto_apply=True
+            window_hours=args.window_hours,
+            auto_apply=True,
+            allow_submit=args.auto_submit,
         )
         print(json.dumps(summary, indent=2, ensure_ascii=False))
         return

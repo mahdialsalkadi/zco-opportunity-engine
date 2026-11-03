@@ -158,7 +158,7 @@ def test_candidate_memory_vault_learning(temp_db, tmp_path):
     # Learn new fields
     new_answers = {
         "email_address": "mohammad.mahdi@graduate.utm.my",
-        "phone_whatsapp_my": "***REMOVED-PHONE***",
+        "phone_whatsapp_my": "+60 11-0000 0000",
         "tshirt_and_gear_size": "L",
     }
     learn_res = vault.learn_from_user_answers(new_answers)
@@ -221,7 +221,7 @@ def test_real_browser_form_auto_filler(tmp_path):
     vault_values = {
         "full_name": "Mohammad Mahdi",
         "email_address": "mohammad.mahdi@graduate.utm.my",
-        "phone_whatsapp_my": "***REMOVED-PHONE***",
+        "phone_whatsapp_my": "+60 11-0000 0000",
         "nationality": "Syrian (SY)",
         "university_name": "Universiti Teknologi Malaysia (UTM)",
         "degree_and_major": "Bachelor of Artificial Intelligence",
@@ -273,11 +273,11 @@ def test_full_controller_batch_and_dashboard(tmp_path):
     # Learn the missing contact fields
     answers = {
         "email_address": "mohammad.mahdi@graduate.utm.my",
-        "phone_whatsapp_my": "***REMOVED-PHONE***",
+        "phone_whatsapp_my": "+60 11-0000 0000",
         "github_or_portfolio_url": "https://github.com/mohammad-mahdi-ai",
         "current_cgpa": "3.92 / 4.00",
     }
-    learn_res = controller.learn_and_resume_applications(answers)
+    learn_res = controller.learn_and_resume_applications(answers, allow_submit=True)
     report2 = learn_res["autonomous_application_report"]
     assert report2["applied_automatically_count"] == 1
     assert report2["paused_needs_input_count"] == 0
@@ -285,5 +285,5 @@ def test_full_controller_batch_and_dashboard(tmp_path):
     # Verify dashboard file generated
     assert dashboard_file.exists()
     content = dashboard_file.read_text(encoding="utf-8")
-    assert "تم التقديم تلقائياً" in content
+    assert "تم التقديم بتأكيد رسمي" in content
     assert "FRIM" in content

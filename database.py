@@ -6,11 +6,11 @@ Manages concurrent read/write operations between:
 1. The 24/7 background `async_crawler.py` Sidecar daemon (`RAW_INGESTED`).
 2. The 6-hour scheduled Antigravity Agent auditor (`VERIFIED_ELIGIBLE` | `REJECTED_*`).
 3. The Autonomous Application & Self-Learning Memory Vault Engine (`auto_applicant.py`):
-   - Transitions eligible opportunities to `APPLIED_AUTOMATICALLY` when all required
-     form fields exist in the Vault, or `PAUSED_NEEDS_USER_INPUT` when new fields
-     are encountered for the first time.
-   - Permanently stores any new user-supplied field or essay answer in `candidate_vault`
-     and `learned_qa_bank` so the user is NEVER asked the same question twice.
+   - Prepares applications and marks them `READY_FOR_REVIEW` by default. Only an
+     explicit human approval (or `ZCO_AUTO_SUBMIT=1`) may click Submit.
+   - Marks `APPLIED_AUTOMATICALLY` only when a real confirmation reference exists;
+     clicked-but-unconfirmed submissions become `SUBMITTED_UNCONFIRMED`.
+   - Temporarily pauses at `PAUSED_NEEDS_USER_INPUT` when new fields are encountered.
 """
 
 from __future__ import annotations
@@ -30,7 +30,11 @@ class OpportunityStatus:
     AUDITING_IN_PROGRESS = "AUDITING_IN_PROGRESS"
     VERIFIED_ELIGIBLE = "VERIFIED_ELIGIBLE"
     PAUSED_NEEDS_USER_INPUT = "PAUSED_NEEDS_USER_INPUT"
+    PAUSED_AT_CAPTCHA = "PAUSED_AT_CAPTCHA"
+    READY_FOR_REVIEW = "READY_FOR_REVIEW"
+    SUBMITTED_UNCONFIRMED = "SUBMITTED_UNCONFIRMED"
     APPLIED_AUTOMATICALLY = "APPLIED_AUTOMATICALLY"
+    APPLICATION_FAILED = "APPLICATION_FAILED"
     REJECTED_COST = "REJECTED_COST"
     REJECTED_INELIGIBLE = "REJECTED_INELIGIBLE"
     SHORTLISTED_BY_USER = "SHORTLISTED_BY_USER"
@@ -271,10 +275,24 @@ class OpportunityDatabase:
     def fetch_unprocessed_batch(
         self, window_hours: float = 6.0, limit: int = 100
     ) -> List[Dict[str, Any]]:
-        cutoff = (
-            dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=window_hours)
-        ).isoformat()
+        now = dt.datetime.now(dt.timezone.utc)
+        cutoff = (now - dt.timedelta(hours=window_hours)).isoformat()
+        stale_cutoff = (now - dt.timedelta(hours=2)).isoformat()
         with self.connect() as conn:
+            # Recover jobs stuck in AUDITING_IN_PROGRESS after a crash or hang.
+            conn.execute(
+                """
+                UPDATE opportunities
+                SET status = ?
+                WHERE status = ?
+                  AND (audited_at IS NULL OR audited_at < ?)
+                """,
+                (
+                    OpportunityStatus.RAW_INGESTED,
+                    OpportunityStatus.AUDITING_IN_PROGRESS,
+                    stale_cutoff,
+                ),
+            )
             rows = conn.execute(
                 """
                 SELECT * FROM opportunities
@@ -307,8 +325,8 @@ class OpportunityDatabase:
                 ids = [r["id"] for r in results]
                 placeholders = ",".join("?" for _ in ids)
                 conn.execute(
-                    f"UPDATE opportunities SET status = ? WHERE id IN ({placeholders})",
-                    [OpportunityStatus.AUDITING_IN_PROGRESS, *ids],
+                    f"UPDATE opportunities SET status = ?, audited_at = ? WHERE id IN ({placeholders})",
+                    [OpportunityStatus.AUDITING_IN_PROGRESS, now.isoformat(), *ids],
                 )
             return results
 
@@ -359,6 +377,7 @@ class OpportunityDatabase:
         filled_payload: Dict[str, Any],
         missing_fields: List[Dict[str, str]],
         confirmation_ref: str = "",
+        notes: str = "",
     ) -> None:
         now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
         applied_at = now_iso if new_status == OpportunityStatus.APPLIED_AUTOMATICALLY else None
@@ -366,8 +385,28 @@ class OpportunityDatabase:
             "confirmation_ref": confirmation_ref,
             "applied_at": applied_at,
             "filled_fields_count": len(filled_payload),
+            "verification_status": new_status,
+            "notes": notes,
+            "pre_submit_screenshot_path": filled_payload.get("pre_submit_screenshot", ""),
+            "post_submit_screenshot_path": filled_payload.get("post_submit_screenshot", ""),
         }
         with self.connect() as conn:
+            existing_row = conn.execute(
+                "SELECT submission_receipt_json FROM opportunities WHERE id = ?",
+                (opportunity_id,),
+            ).fetchone()
+            try:
+                previous_receipt = json.loads(
+                    (existing_row["submission_receipt_json"] if existing_row else "") or "{}"
+                )
+            except (TypeError, ValueError):
+                previous_receipt = {}
+            previous_ref = str(previous_receipt.get("confirmation_ref") or "").strip()
+            if previous_ref and not confirmation_ref:
+                receipt_obj["previous_confirmation_ref"] = previous_ref
+                receipt_obj["previous_verification_status"] = previous_receipt.get(
+                    "verification_status", ""
+                )
             conn.execute(
                 """
                 UPDATE opportunities
@@ -403,6 +442,91 @@ class OpportunityDatabase:
                 ),
             )
 
+    def quarantine_unverified_submissions(self, dry_run: bool = False) -> List[Dict[str, Any]]:
+        """Downgrade legacy synthetic/unverified 'applied' rows to SUBMITTED_UNCONFIRMED.
+
+        Earlier versions generated receipt codes like ``SUB-...`` / ``DOM-SUB-...``
+        even when no confirmation page was observed, and local testbed fixtures could
+        carry a realistic-looking reference. Those rows must not be shown as confirmed
+        applications.
+        """
+        quarantined: List[Dict[str, Any]] = []
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, opportunity_code, source_feed_id, apply_url, "
+                "submission_receipt_json FROM opportunities "
+                "WHERE status = ?",
+                (OpportunityStatus.APPLIED_AUTOMATICALLY,),
+            ).fetchall()
+            for row in rows:
+                try:
+                    receipt = json.loads(row["submission_receipt_json"] or "{}")
+                except (TypeError, ValueError):
+                    receipt = {}
+                ref = str(receipt.get("confirmation_ref") or "").strip()
+                is_local_testbed = (
+                    str(row["source_feed_id"] or "") == "local_testbed_portal"
+                    or str(row["apply_url"] or "").startswith("file://")
+                )
+                is_synthetic = (
+                    is_local_testbed
+                    or not ref
+                    or ref.startswith("SUB-")
+                    or ref.startswith("DOM-SUB-")
+                )
+                if not is_synthetic:
+                    continue
+                receipt["confirmation_ref"] = ""
+                receipt["verification_status"] = OpportunityStatus.SUBMITTED_UNCONFIRMED
+                receipt["notes"] = (
+                    "Demo/testbed submission is not a real application."
+                    if is_local_testbed
+                    else "Legacy submission receipt was synthetic or missing a verified "
+                    "confirmation reference; marked as unconfirmed."
+                )
+                if not dry_run:
+                    conn.execute(
+                        "UPDATE opportunities SET status = ?, submission_receipt_json = ?, "
+                        "rejection_reason = ? WHERE id = ?",
+                        (
+                            OpportunityStatus.SUBMITTED_UNCONFIRMED,
+                            json.dumps(receipt, ensure_ascii=False),
+                            "بانتظار تأكيد رسمي من الجهة المنظمة (إيصال قديم غير موثّق)",
+                            row["id"],
+                        ),
+                    )
+                quarantined.append(
+                    {
+                        "id": row["id"],
+                        "opportunity_code": row["opportunity_code"],
+                        "old_reference": ref,
+                    }
+                )
+            if not dry_run:
+                # Keep the audit history consistent with the downgraded opportunity rows.
+                conn.execute(
+                    """
+                    UPDATE application_submissions
+                    SET submission_status = ?, confirmation_ref = ''
+                    WHERE submission_status = ?
+                      AND (
+                        confirmation_ref = ''
+                        OR confirmation_ref LIKE 'SUB-%'
+                        OR confirmation_ref LIKE 'DOM-SUB-%'
+                        OR opportunity_id IN (
+                            SELECT id FROM opportunities
+                            WHERE source_feed_id = 'local_testbed_portal'
+                               OR apply_url LIKE 'file://%'
+                        )
+                      )
+                    """,
+                    (
+                        OpportunityStatus.SUBMITTED_UNCONFIRMED,
+                        OpportunityStatus.APPLIED_AUTOMATICALLY,
+                    ),
+                )
+        return quarantined
+
     def get_verified_opportunities(
         self,
         is_inside_malaysia: Optional[bool] = None,
@@ -411,13 +535,17 @@ class OpportunityDatabase:
     ) -> List[Dict[str, Any]]:
         query = """
             SELECT * FROM opportunities
-            WHERE status IN (?, ?, ?, ?)
+            WHERE status IN (?, ?, ?, ?, ?, ?, ?, ?)
               AND match_score >= ?
         """
         params: List[Any] = [
             OpportunityStatus.VERIFIED_ELIGIBLE,
             OpportunityStatus.PAUSED_NEEDS_USER_INPUT,
+            OpportunityStatus.PAUSED_AT_CAPTCHA,
+            OpportunityStatus.READY_FOR_REVIEW,
+            OpportunityStatus.SUBMITTED_UNCONFIRMED,
             OpportunityStatus.APPLIED_AUTOMATICALLY,
+            OpportunityStatus.APPLICATION_FAILED,
             OpportunityStatus.SHORTLISTED_BY_USER,
             min_score,
         ]

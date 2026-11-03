@@ -654,12 +654,19 @@ def synthesize_tailored_typst_cv(
 
     target_json_path = CUSTOM_CVS_DIR / f"data_{clean_code}.json"
     target_pdf_path = CUSTOM_CVS_DIR / f"CV_Mohammad_Alsalkadi_{clean_code}.pdf"
+    # Remove any stale artifact so a compile failure can never be reported as success.
+    if target_pdf_path.exists():
+        try:
+            target_pdf_path.unlink()
+        except OSError:
+            pass
 
     # Layer 3 & 4: Closed-Loop Compilation & Layout Verification Loop
     max_attempts = 2
     concise_mode = False
     final_page_count = 1
     final_ats_score = 90.0
+    compile_ok = False
 
     for attempt in range(1, max_attempts + 1):
         payload = ConstrainedXYZRewriter.rewrite_for_target(
@@ -676,7 +683,9 @@ def synthesize_tailored_typst_cv(
         success = TypstCompiler.compile(target_json_path, target_pdf_path)
         if not success:
             logger.error("Typst compile failed on attempt %d", attempt)
+            compile_ok = False
             break
+        compile_ok = True
 
         pages, pdf_text = ClosedLoopVerifier.get_pdf_page_count_and_text(target_pdf_path)
         final_page_count = pages
@@ -689,6 +698,22 @@ def synthesize_tailored_typst_cv(
             logger.warning("Layout constraint overflow (%d pages). Triggering concise mode re-loop...", pages)
             concise_mode = True
 
+    if not compile_ok or not target_pdf_path.exists() or target_pdf_path.stat().st_size <= 1000:
+        return {
+            "cv_required": True,
+            "status": "failed",
+            "error": "Typst compilation failed or produced an empty PDF",
+            "requirement_reason": req_reason,
+            "opportunity_code": code,
+            "domain_focus": features.domain_focus,
+            "pdf_path": None,
+            "pdf_filename": target_pdf_path.name,
+            "file_size_bytes": 0,
+            "page_count": 0,
+            "ats_score": 0.0,
+            "projects_included": [p["title"] for p in selected_projects],
+        }
+
     return {
         "cv_required": True,
         "status": "generated",
@@ -697,7 +722,7 @@ def synthesize_tailored_typst_cv(
         "domain_focus": features.domain_focus,
         "pdf_path": str(target_pdf_path),
         "pdf_filename": target_pdf_path.name,
-        "file_size_bytes": target_pdf_path.stat().st_size if target_pdf_path.exists() else 0,
+        "file_size_bytes": target_pdf_path.stat().st_size,
         "page_count": final_page_count,
         "ats_score": final_ats_score,
         "projects_included": [p["title"] for p in selected_projects],

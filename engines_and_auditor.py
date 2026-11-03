@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
-import hashlib
 import io
 import json
 import logging
@@ -352,7 +351,7 @@ class PageInspectionReport:
 
 @dataclasses.dataclass
 class BrowserSubmissionReceipt:
-    status: str  # "APPLIED_AUTOMATICALLY" | "PAUSED_AT_CAPTCHA" | "FAILED_SUBMISSION"
+    status: str  # "APPLIED_AUTOMATICALLY" | "SUBMITTED_UNCONFIRMED" | "READY_FOR_SUBMISSION" | "PAUSED_AT_CAPTCHA"
     confirmation_reference: str
     confirmation_page_text: str
     pre_submit_screenshot_path: str
@@ -732,6 +731,12 @@ class RealBrowserFormAutoFiller:
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import Select
 
+        allowed_prefixes = ("http://", "https://", "file://")
+        if not str(apply_url or "").startswith(allowed_prefixes):
+            raise ValueError(
+                f"Refusing to open unsupported application URL scheme: {apply_url!r}"
+            )
+
         payload = dict(vault_values)
         payload["tailored_motivation_essay"] = tailored_motivation_essay
 
@@ -868,59 +873,80 @@ class RealBrowserFormAutoFiller:
                     notes="تم فتح الرابط الحقيقي عبر المتصفح: الصفحة عبارة عن مقال إخباري أو بوابة تعريفية لا تحتوي على حقول استمارة تفاعلية مباشرة. تم تجهيز طرد التقديم كاملاً (السيرة الذاتية وخطاب الدافع) بانتظار التقديم المباشر.",
                 )
 
+            if not auto_click_submit:
+                return BrowserSubmissionReceipt(
+                    status="READY_FOR_SUBMISSION",
+                    confirmation_reference="",
+                    confirmation_page_text="",
+                    pre_submit_screenshot_path=str(pre_shot_path),
+                    post_submit_screenshot_path="",
+                    filled_dom_fields_count=filled_count,
+                    uploaded_files_count=uploaded_files_count,
+                    notes="تمت تعبئة الاستمارة في المتصفح الحقيقي دون الضغط على Submit (وضع المعاينة).",
+                )
+
             post_shot_path = self.screenshots_dir / f"{opportunity_code}_submitted.png"
             confirmation_text = ""
             confirmation_ref = ""
+            submit_clicked = False
 
-            if auto_click_submit:
-                submit_buttons = driver.find_elements(
-                    By.CSS_SELECTOR,
-                    "button[type='submit'], input[type='submit'], #submit-btn, .submit-btn, [role='button'][aria-label*='Submit'], [role='button'][aria-label*='إرسال']",
-                )
-                if not submit_buttons:
-                    for b in driver.find_elements(
-                        By.CSS_SELECTOR, "div[role='button'], span[role='button'], button"
+            submit_buttons = driver.find_elements(
+                By.CSS_SELECTOR,
+                "button[type='submit'], input[type='submit'], #submit-btn, .submit-btn, [role='button'][aria-label*='Submit'], [role='button'][aria-label*='إرسال']",
+            )
+            if not submit_buttons:
+                for b in driver.find_elements(
+                    By.CSS_SELECTOR, "div[role='button'], span[role='button'], button"
+                ):
+                    txt = (b.text or "").strip().lower()
+                    if txt in (
+                        "submit",
+                        "إرسال",
+                        "send",
+                        "apply",
+                        "تقديم",
+                        "submit application",
                     ):
-                        txt = (b.text or "").strip().lower()
-                        if txt in (
-                            "submit",
-                            "إرسال",
-                            "send",
-                            "apply",
-                            "تقديم",
-                            "submit application",
-                        ):
-                            submit_buttons = [b]
-                            break
+                        submit_buttons = [b]
+                        break
 
-                if submit_buttons:
-                    submit_buttons[0].click()
-                    time.sleep(0.4)
+            if submit_buttons:
+                submit_buttons[0].click()
+                submit_clicked = True
+                time.sleep(0.4)
 
-                driver.save_screenshot(str(post_shot_path))
-                body_el = driver.find_element(By.TAG_NAME, "body")
-                full_body_text = (body_el.text or "").strip()
-                ref_match = re.search(r"(?:REF|SUB|APP|CONF)-[A-Z0-9-]+", full_body_text) or re.search(
-                    r"(?:REF|SUB|APP|CONF)-[A-Z0-9-]+", driver.page_source
+            driver.save_screenshot(str(post_shot_path))
+            body_el = driver.find_element(By.TAG_NAME, "body")
+            full_body_text = (body_el.text or "").strip()
+            ref_match = re.search(r"(?:REF|SUB|APP|CONF)-[A-Z0-9-]+", full_body_text) or re.search(
+                r"(?:REF|SUB|APP|CONF)-[A-Z0-9-]+", driver.page_source
+            )
+            if ref_match:
+                confirmation_ref = ref_match.group(0)
+            confirmation_text = full_body_text[:1000]
+
+            if not submit_clicked:
+                status = "READY_FOR_SUBMISSION"
+                notes = "تمت تعبئة الاستمارة، لكن لم يتم العثور على زر Submit موثوق. راجع الصورة وأرسل الطلب يدوياً."
+            elif confirmation_ref:
+                status = "APPLIED_AUTOMATICALLY"
+                notes = "تم فتح المتصفح الحقيقي وتعبئة الحقول والضغط على Submit مع رصد مرجع تأكيد."
+            else:
+                status = "SUBMITTED_UNCONFIRMED"
+                notes = (
+                    "تم الضغط على Submit، لكن الصفحة لم تُظهر مرجع تأكيد واضحاً. "
+                    "لا تعتبر الطلب مؤكداً حتى تصل رسالة/إيصال رسمي من الجهة المنظمة."
                 )
-                if ref_match:
-                    confirmation_ref = ref_match.group(0)
-                else:
-                    digest = hashlib.sha256(
-                        f"{opportunity_code}|{apply_url}|{filled_count}".encode("utf-8")
-                    ).hexdigest()[:8].upper()
-                    confirmation_ref = f"DOM-SUB-{opportunity_code}-{digest}"
-                confirmation_text = full_body_text[:1000]
 
             return BrowserSubmissionReceipt(
-                status="APPLIED_AUTOMATICALLY",
+                status=status,
                 confirmation_reference=confirmation_ref,
                 confirmation_page_text=confirmation_text,
                 pre_submit_screenshot_path=str(pre_shot_path),
                 post_submit_screenshot_path=str(post_shot_path),
                 filled_dom_fields_count=filled_count,
                 uploaded_files_count=uploaded_files_count,
-                notes="تم فتح المتصفح الحقيقي وتعبئة حقول HTML ورفع المرفقات والضغط على زر Submit بنجاح.",
+                notes=notes,
             )
         finally:
             driver.quit()
@@ -1268,7 +1294,14 @@ class CandidateMemoryVault:
 
         for key in required_keys:
             norm_key = key.strip().lower()
-            if norm_key == "tailored_motivation_essay":
+            # These are generated/attached by the engine, not user-supplied fields.
+            if norm_key in {
+                "tailored_motivation_essay",
+                "cv_pdf_path",
+                "upload_cv",
+                "upload_resume",
+                "resume",
+            }:
                 continue
             if norm_key in known and known[norm_key]:
                 filled_payload[norm_key] = known[norm_key]
@@ -1474,7 +1507,18 @@ class AutonomousApplicantEngine:
 
         return essay_text
 
-    def attempt_auto_application(self, opp: Dict[str, Any]) -> Dict[str, Any]:
+    def attempt_auto_application(
+        self,
+        opp: Dict[str, Any],
+        allow_submit: bool = False,
+    ) -> Dict[str, Any]:
+        """Prepare (and optionally submit) one application.
+
+        Submission is disabled by default. Even when ``allow_submit`` is True,
+        the opportunity is only marked ``APPLIED_AUTOMATICALLY`` when the browser
+        captured a real confirmation reference. A clicked-but-unconfirmed submit
+        is recorded as ``SUBMITTED_UNCONFIRMED`` and never reported as success.
+        """
         opp_id = opp["id"]
         opp_code = opp.get("opportunity_code") or f"ID-{opp_id}"
         apply_url = opp.get("apply_url", "")
@@ -1492,6 +1536,7 @@ class AutonomousApplicantEngine:
         filled_payload, missing_fields = self.vault.inspect_missing_fields_for_opportunity(opp)
 
         if missing_fields:
+            notes = "الطلب متوقف بانتظار حقول جديدة لم تُحفظ بعد في خزنة الذاكرة."
             self.db.record_application_attempt(
                 opportunity_id=opp_id,
                 opportunity_code=opp_code,
@@ -1499,6 +1544,7 @@ class AutonomousApplicantEngine:
                 filled_payload=filled_payload,
                 missing_fields=missing_fields,
                 confirmation_ref="",
+                notes=notes,
             )
             return {
                 "opportunity_code": opp_code,
@@ -1507,40 +1553,115 @@ class AutonomousApplicantEngine:
                 "filled_fields_count": len(filled_payload),
                 "missing_fields": missing_fields,
                 "confirmation_ref": "",
+                "notes": notes,
             }
 
         known = self.vault.get_known_fields()
+        cv_required = False
         try:
-            from typst_agentic_cv_engine import is_cv_required_for_opportunity, synthesize_tailored_typst_cv
-            cv_required, _ = is_cv_required_for_opportunity(opp)
+            from typst_agentic_cv_engine import (
+                is_cv_required_for_opportunity,
+                synthesize_tailored_typst_cv,
+            )
+
+            cv_required, cv_reason = is_cv_required_for_opportunity(opp)
             if cv_required:
-                cv_res = synthesize_tailored_typst_cv(opp, force=True)
-                if cv_res.get("pdf_path") and pathlib.Path(cv_res["pdf_path"]).exists():
-                    custom_cv_path = str(cv_res["pdf_path"])
-                    known["cv_pdf_path"] = custom_cv_path
-                    filled_payload["cv_pdf_path"] = custom_cv_path
-                    self.vault.set_known_field("cv_pdf_path", custom_cv_path)
+                cv_res: Dict[str, Any] = {}
+                try:
+                    cv_res = synthesize_tailored_typst_cv(opp, force=True)
+                except Exception as exc:
+                    cv_res = {"status": "failed", "error": str(exc), "pdf_path": None}
+
+                pdf_path = pathlib.Path(str(cv_res.get("pdf_path") or ""))
+                cv_ok = (
+                    cv_res.get("status") == "generated"
+                    and pdf_path.is_file()
+                    and pdf_path.stat().st_size > 1000
+                )
+                if not cv_ok:
+                    err = cv_res.get("error") or cv_res.get("reason") or "ملف PDF غير موجود أو فارغ"
+                    notes = f"تعذر توليد السيرة الذاتية المطلوبة لهذه الفرصة: {err}"
+                    self.db.record_application_attempt(
+                        opportunity_id=opp_id,
+                        opportunity_code=opp_code,
+                        new_status=OpportunityStatus.APPLICATION_FAILED,
+                        filled_payload=filled_payload,
+                        missing_fields=[],
+                        confirmation_ref="",
+                        notes=notes,
+                    )
+                    return {
+                        "opportunity_code": opp_code,
+                        "title": opp["title"],
+                        "application_status": OpportunityStatus.APPLICATION_FAILED,
+                        "filled_fields_count": len(filled_payload),
+                        "missing_fields": [],
+                        "confirmation_ref": "",
+                        "notes": notes,
+                    }
+
+                custom_cv_path = str(pdf_path)
+                known["cv_pdf_path"] = custom_cv_path
+                filled_payload["cv_pdf_path"] = custom_cv_path
+                self.vault.set_known_field("cv_pdf_path", custom_cv_path)
             else:
                 known.pop("cv_pdf_path", None)
                 filled_payload.pop("cv_pdf_path", None)
-        except Exception:
-            try:
-                pm = PortfolioManager()
-                custom_cv_path = pm.render_custom_cv_for_opportunity(opp)
-                known["cv_pdf_path"] = str(custom_cv_path)
-                filled_payload["cv_pdf_path"] = str(custom_cv_path)
-            except Exception:
-                pass
+        except Exception as exc:
+            notes = f"تعذر التحقق من متطلبات السيرة الذاتية: {exc}"
+            self.db.record_application_attempt(
+                opportunity_id=opp_id,
+                opportunity_code=opp_code,
+                new_status=OpportunityStatus.APPLICATION_FAILED,
+                filled_payload=filled_payload,
+                missing_fields=[],
+                confirmation_ref="",
+                notes=notes,
+            )
+            return {
+                "opportunity_code": opp_code,
+                "title": opp["title"],
+                "application_status": OpportunityStatus.APPLICATION_FAILED,
+                "filled_fields_count": len(filled_payload),
+                "missing_fields": [],
+                "confirmation_ref": "",
+                "notes": notes,
+            }
 
         essay = self.synthesize_motivation_statement(opp, known)
         filled_payload["tailored_motivation_essay"] = essay
-        filled_payload["submitted_via"] = "ZCO-Engine v4.0 Real Chromium Auto-Applicant"
-        filled_payload["submitted_timestamp_utc"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        filled_payload["prepared_via"] = "ZCO-Engine Real Chromium Applicant"
+        filled_payload["prepared_timestamp_utc"] = dt.datetime.now(dt.timezone.utc).isoformat()
+
+        if not allow_submit:
+            notes = (
+                "تم تجهيز الطلب بالكامل (الحقول + السيرة الذاتية + خطاب الدافع) "
+                "ولم يتم الضغط على Submit. بانتظار موافقة بشرية صريحة."
+            )
+            self.db.record_application_attempt(
+                opportunity_id=opp_id,
+                opportunity_code=opp_code,
+                new_status=OpportunityStatus.READY_FOR_REVIEW,
+                filled_payload=filled_payload,
+                missing_fields=[],
+                confirmation_ref="",
+                notes=notes,
+            )
+            return {
+                "opportunity_code": opp_code,
+                "title": opp["title"],
+                "application_status": OpportunityStatus.READY_FOR_REVIEW,
+                "filled_fields_count": len(filled_payload),
+                "missing_fields": [],
+                "confirmation_ref": "",
+                "notes": notes,
+            }
 
         confirmation_ref = ""
         pre_shot = ""
         post_shot = ""
         notes = ""
+        final_status = OpportunityStatus.APPLICATION_FAILED
 
         try:
             receipt = self.browser_filler.fill_and_submit_application(
@@ -1557,15 +1678,23 @@ class AutonomousApplicantEngine:
             filled_payload["pre_submit_screenshot"] = pre_shot
             filled_payload["post_submit_screenshot"] = post_shot
             filled_payload["confirmation_page_text"] = receipt.confirmation_page_text
+            filled_payload["submitted_timestamp_utc"] = dt.datetime.now(dt.timezone.utc).isoformat()
 
             if receipt.status == "APPLIED_AUTOMATICALLY" and confirmation_ref:
                 final_status = OpportunityStatus.APPLIED_AUTOMATICALLY
+            elif receipt.status in ("APPLIED_AUTOMATICALLY", "SUBMITTED_UNCONFIRMED"):
+                final_status = OpportunityStatus.SUBMITTED_UNCONFIRMED
+                confirmation_ref = ""
+            elif receipt.status == "PAUSED_AT_CAPTCHA":
+                final_status = OpportunityStatus.PAUSED_AT_CAPTCHA
+            elif receipt.status == "READY_FOR_SUBMISSION":
+                final_status = OpportunityStatus.READY_FOR_REVIEW
             else:
-                final_status = OpportunityStatus.VERIFIED_ELIGIBLE
+                final_status = OpportunityStatus.APPLICATION_FAILED
         except Exception as exc:
             logger.warning("Browser automation attempt failed for %s: %s", opp_code, exc)
-            final_status = OpportunityStatus.VERIFIED_ELIGIBLE
-            notes = f"تعذر استكمال التقديم التلقائي عبر المتصفح: {exc}. طرد التقديم مجهز بالكامل."
+            final_status = OpportunityStatus.APPLICATION_FAILED
+            notes = f"تعذر استكمال التقديم عبر المتصفح: {exc}. لم يتم تأكيد أي تقديم."
 
         self.db.record_application_attempt(
             opportunity_id=opp_id,
@@ -1574,6 +1703,7 @@ class AutonomousApplicantEngine:
             filled_payload=filled_payload,
             missing_fields=[],
             confirmation_ref=confirmation_ref,
+            notes=notes,
         )
         return {
             "opportunity_code": opp_code,
@@ -1587,22 +1717,36 @@ class AutonomousApplicantEngine:
             "notes": notes,
         }
 
-    def process_all_pending_applications(self) -> Dict[str, Any]:
+    def process_all_pending_applications(
+        self,
+        allow_submit: bool = False,
+    ) -> Dict[str, Any]:
         candidates = (
             self.db.get_opportunities_by_status(OpportunityStatus.VERIFIED_ELIGIBLE)
             + self.db.get_opportunities_by_status(OpportunityStatus.PAUSED_NEEDS_USER_INPUT)
         )
         applied_list: List[Dict[str, Any]] = []
+        unconfirmed_list: List[Dict[str, Any]] = []
+        ready_list: List[Dict[str, Any]] = []
         paused_list: List[Dict[str, Any]] = []
+        failed_list: List[Dict[str, Any]] = []
         consolidated_missing_questions: Dict[str, Dict[str, Any]] = {}
 
         for opp in candidates:
-            res = self.attempt_auto_application(opp)
-            if res["application_status"] == OpportunityStatus.APPLIED_AUTOMATICALLY:
+            res = self.attempt_auto_application(opp, allow_submit=allow_submit)
+            status = res["application_status"]
+            if status == OpportunityStatus.APPLIED_AUTOMATICALLY:
                 applied_list.append(res)
-            else:
+            elif status == OpportunityStatus.SUBMITTED_UNCONFIRMED:
+                unconfirmed_list.append(res)
+            elif status == OpportunityStatus.READY_FOR_REVIEW:
+                ready_list.append(res)
+            elif status in (
+                OpportunityStatus.PAUSED_NEEDS_USER_INPUT,
+                OpportunityStatus.PAUSED_AT_CAPTCHA,
+            ):
                 paused_list.append(res)
-                for mf in res["missing_fields"]:
+                for mf in res.get("missing_fields", []):
                     key = mf["field_key"]
                     if key not in consolidated_missing_questions:
                         consolidated_missing_questions[key] = {
@@ -1613,13 +1757,22 @@ class AutonomousApplicantEngine:
                     consolidated_missing_questions[key]["needed_by_opportunities"].append(
                         res["opportunity_code"]
                     )
+            else:
+                failed_list.append(res)
 
         return {
+            "submit_enabled": allow_submit,
             "total_evaluated_for_application": len(candidates),
             "applied_automatically_count": len(applied_list),
             "applied_automatically": applied_list,
+            "submitted_unconfirmed_count": len(unconfirmed_list),
+            "submitted_unconfirmed": unconfirmed_list,
+            "ready_for_review_count": len(ready_list),
+            "ready_for_review": ready_list,
             "paused_needs_input_count": len(paused_list),
             "paused_opportunities": paused_list,
+            "application_failed_count": len(failed_list),
+            "application_failed": failed_list,
             "consolidated_questions_for_user": list(consolidated_missing_questions.values()),
         }
 

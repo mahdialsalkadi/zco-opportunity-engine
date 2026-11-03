@@ -10,6 +10,9 @@ __pycache__/
 *.secret
 config/candidate_profile.json
 config/master_profile.yaml
+config/comprehensive_portfolio.json
+data/comprehensive_portfolio.json
+config/private/
 !config/*.example.*
 
 # SQLite Databases & Dynamic State
@@ -18,13 +21,18 @@ config/master_profile.yaml
 *.db-wal
 *.db-shm
 data/opportunities.db
+data/opportunities.db.bak*
 data/supervisor_state.json
+data/dashboard_token.txt
 
-# Generated Documents, Custom CVs, Screenshots & Logs
+# Generated Documents, Custom CVs, Screenshots, Dashboards & Logs
 data/documents/*.pdf
+data/documents/*.md
 data/documents/custom_cvs/
+data/dashboards/
 data/screenshots/*.png
 data/logs/*
+verified_opportunities_matrix.md
 !data/logs/.gitkeep
 !data/documents/.gitkeep
 *.png

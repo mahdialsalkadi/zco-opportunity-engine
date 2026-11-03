@@ -348,6 +348,42 @@ def get_curated_seed_batch(base_dir: pathlib.Path = BASE_DIR) -> List[RawOpportu
         ),
     ]
 
+
+
+def extract_deadline_iso(text: str) -> str:
+    """Extract a real deadline from text. Returns "" when no date is present.
+
+    Never invents a fallback date; unknown deadlines stay unknown.
+    """
+    if not text:
+        return ""
+    iso_match = re.search(r"\b(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b", text)
+    if iso_match:
+        return iso_match.group(0)
+    months = {
+        "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+        "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+        "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9, "oct": 10,
+        "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+    }
+    pattern = re.compile(
+        r"\b(\d{1,2})\s*(?:st|nd|rd|th)?[\s,./-]+"
+        r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+        r"jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+        r"[\s,./-]+(20\d{2})\b",
+        re.IGNORECASE,
+    )
+    match = pattern.search(text)
+    if not match:
+        return ""
+    day = int(match.group(1))
+    month = months.get(match.group(2).lower()[:4], months.get(match.group(2).lower()[:3], 0))
+    year = int(match.group(3))
+    try:
+        return dt.date(year, month, day).isoformat()
+    except ValueError:
+        return ""
+
 def infer_clean_organizer(title: str, desc: str = "") -> str:
     """
     Extracts the genuine host institution / university / foundation organizer from the title & content,
@@ -358,7 +394,7 @@ def infer_clean_organizer(title: str, desc: str = "") -> str:
     
     if "caltech" in t:
         return "California Institute of Technology (Caltech)"
-    if "mit" in t:
+    if re.search(r"\bmit\b", t):
         return "Massachusetts Institute of Technology (MIT)"
     if "harvard" in t:
         return "Harvard University (Griffin Financial Aid Office)"
@@ -726,7 +762,7 @@ class AsyncOpportunityCrawler:
                     track_category=track,
                     raw_description=desc[:2000],
                     raw_terms_text=desc[:4000],
-                    deadline_iso=(dt.date.today() + dt.timedelta(days=45)).isoformat(),
+                    deadline_iso=extract_deadline_iso(f"{title} {desc}"),
                     source_feed_id=source_cfg["feed_id"],
                 )
             )
@@ -761,6 +797,11 @@ class AsyncOpportunityCrawler:
 
         for src, xml_resp in zip(self.sources, xml_responses):
             if isinstance(xml_resp, Exception) or not xml_resp:
+                errors += 1
+                if isinstance(xml_resp, Exception):
+                    logger.warning("Source %s failed: %s", src.get("feed_id"), xml_resp)
+                else:
+                    logger.warning("Source %s returned an empty response", src.get("feed_id"))
                 continue
             parsed_records = self.parse_rss_items(xml_resp, src)
 
@@ -814,7 +855,7 @@ class AsyncOpportunityCrawler:
             "errors": errors,
         }
 
-    async def run_forever(self, include_curated_seed_on_first_run: bool = True) -> None:
+    async def run_forever(self, include_curated_seed_on_first_run: bool = False) -> None:
         logger.info(
             "Starting 24/7 AsyncOpportunityCrawler daemon (poll interval: %ds)...",
             self.poll_interval_seconds,
@@ -855,8 +896,8 @@ def main() -> None:
     parser.add_argument(
         "--seed-demo",
         action="store_true",
-        default=True,
-        help="Include curated multi-track seed opportunities on initial run",
+        default=False,
+        help="Include curated demo/testbed opportunities (disabled by default)",
     )
     parser.add_argument(
         "--poll-interval-minutes",
