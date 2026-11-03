@@ -39,6 +39,16 @@ logger = logging.getLogger("ZCO-PortfolioDocs")
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 
 
+ACTIVITY_PREFERENCE_OPTIONS_AR: Dict[str, str] = {
+    "NATURE_ECO_CONSERVATION": "الطبيعة والبيئة والحفظ البيئي",
+    "GREEN_AI_CLIMATE_TECH": "الذكاء الاصطناعي الأخضر وتقنيات المناخ",
+    "CORE_AI_HACKATHONS": "هاكاثونات ومسابقات الذكاء الاصطناعي",
+    "OUTDOOR_LEADERSHIP_CAMPS": "المعسكرات الميدانية والقيادة الخارجية",
+    "COMMUNITY_VOLUNTEERING_EXCHANGE": "التطوع المجتمعي والتبادل الثقافي",
+    "MENA_GCC_ASEAN_SPECIAL": "فرص الشرق الأوسط والخليج وآسيان",
+}
+
+
 AUTHENTIC_PORTFOLIO: Dict[str, Any] = {
     "personal": {
         "full_name_en": "Mohammad Mahdi Alsalkadi",
@@ -62,6 +72,7 @@ AUTHENTIC_PORTFOLIO: Dict[str, Any] = {
         "portfolio_url": "",
         "dietary_preference": "Halal (حلال)",
         "tshirt_size": "M (Medium)",
+        "activity_preferences": "",
         "swimming_fitness": "Capable swimmer, enthusiastic outdoor camper & trekker",
         "emergency_contact": "Family Contact - Kuwait"
     },
@@ -171,6 +182,7 @@ PROFILE_FIELD_LOCATIONS: Dict[str, Tuple[str, str]] = {
     "phone_my": ("personal", "phone_my"),
     "passport_number": ("personal", "passport_number"),
     "address_my": ("personal", "address_my"),
+    "activity_preferences": ("personal", "activity_preferences"),
     "cgpa": ("education", "cgpa"),
     "matric_number": ("education", "matric_number"),
     "github_url": ("personal", "github_url"),
@@ -182,6 +194,7 @@ VAULT_KEY_BY_PROFILE_FIELD: Dict[str, str] = {
     "phone_my": "phone_whatsapp_my",
     "passport_number": "passport_number",
     "address_my": "residential_address_my",
+    "activity_preferences": "activity_preferences",
     "cgpa": "current_cgpa",
     "matric_number": "utm_matric_number",
     "github_url": "github_or_portfolio_url",
@@ -236,6 +249,20 @@ def normalize_profile_updates(
         elif field == "address_my":
             if len(value) > 300:
                 errors.append("address_my must be 300 characters or fewer.")
+        elif field == "activity_preferences":
+            tracks = [part.strip() for part in value.split(",") if part.strip()]
+            unknown = [
+                track for track in tracks if track not in ACTIVITY_PREFERENCE_OPTIONS_AR
+            ]
+            if unknown:
+                errors.append(
+                    "activity_preferences contains unknown tracks: "
+                    + ", ".join(unknown)
+                )
+            elif len(set(tracks)) != len(tracks):
+                errors.append("activity_preferences contains duplicate tracks.")
+            else:
+                cleaned[field] = ", ".join(tracks)
         elif field == "github_url":
             if len(value) > 300:
                 errors.append("github_url must be 300 characters or fewer.")
@@ -368,6 +395,7 @@ class PortfolioManager:
             "cgpa": education.get("cgpa"),
             "github": personal.get("github_url"),
             "address": personal.get("address_my"),
+            "activity_preferences": personal.get("activity_preferences"),
         }
         for key, value in mapping.items():
             if value is not None:
@@ -392,6 +420,7 @@ class PortfolioManager:
             "passport_number": "passport_number",
             "github_url": "github_url",
             "address_my": "current_residence",
+            "activity_preferences": "activity_preferences",
         }
         for source_key, target_key in personal_mapping.items():
             if source_key in source_personal:
@@ -443,6 +472,7 @@ class PortfolioManager:
             ("github_or_portfolio_url", p.get("github_url", ""), "academic", "رابط GitHub أو المعرض البرمجي"),
             ("dietary_preference", p.get("dietary_preference", ""), "logistics", "التفضيلات الغذائية"),
             ("tshirt_and_gear_size", p.get("tshirt_size", ""), "logistics", "مقاس القميص والمعدات الميدانية"),
+            ("activity_preferences", p.get("activity_preferences", ""), "preferences", "تفضيلات أنواع الأنشطة"),
             ("swimming_and_outdoor_fitness", p.get("swimming_fitness", ""), "outdoor", "اللياقة الميدانية والسباحة والتخييم"),
             ("cv_pdf_path", str(CV_PDF_FILE), "documents", "مسار ملف السيرة الذاتية PDF"),
         ]

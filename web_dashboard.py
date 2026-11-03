@@ -181,6 +181,7 @@ class ProfileUpdateRequest(BaseModel):
     phone_my: Optional[str] = Field(default=None, max_length=30)
     passport_number: Optional[str] = Field(default=None, max_length=20)
     address_my: Optional[str] = Field(default=None, max_length=300)
+    activity_preferences: Optional[str] = Field(default=None, max_length=400)
     cgpa: Optional[str] = Field(default=None, max_length=20)
     matric_number: Optional[str] = Field(default=None, max_length=30)
     github_url: Optional[str] = Field(default=None, max_length=300)
@@ -840,6 +841,35 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     <label class="block text-gray-400 mb-1 font-semibold">عنوان السكن في كوالالمبور:</label>
                     <input type="text" id="prof-address" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
                 </div>
+                <div>
+                    <label class="block text-gray-400 mb-1 font-semibold">تفضيلات أنواع الأنشطة:</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <label class="flex items-center gap-2 bg-gray-800/60 border border-gray-700 rounded-xl p-2 cursor-pointer">
+                            <input type="checkbox" name="activity-pref" value="NATURE_ECO_CONSERVATION" class="accent-emerald-500">
+                            <span class="text-gray-300">الطبيعة والبيئة</span>
+                        </label>
+                        <label class="flex items-center gap-2 bg-gray-800/60 border border-gray-700 rounded-xl p-2 cursor-pointer">
+                            <input type="checkbox" name="activity-pref" value="GREEN_AI_CLIMATE_TECH" class="accent-emerald-500">
+                            <span class="text-gray-300">الذكاء الاصطناعي الأخضر</span>
+                        </label>
+                        <label class="flex items-center gap-2 bg-gray-800/60 border border-gray-700 rounded-xl p-2 cursor-pointer">
+                            <input type="checkbox" name="activity-pref" value="CORE_AI_HACKATHONS" class="accent-emerald-500">
+                            <span class="text-gray-300">هاكاثونات ومسابقات</span>
+                        </label>
+                        <label class="flex items-center gap-2 bg-gray-800/60 border border-gray-700 rounded-xl p-2 cursor-pointer">
+                            <input type="checkbox" name="activity-pref" value="OUTDOOR_LEADERSHIP_CAMPS" class="accent-emerald-500">
+                            <span class="text-gray-300">معسكرات ميدانية وقيادة</span>
+                        </label>
+                        <label class="flex items-center gap-2 bg-gray-800/60 border border-gray-700 rounded-xl p-2 cursor-pointer">
+                            <input type="checkbox" name="activity-pref" value="COMMUNITY_VOLUNTEERING_EXCHANGE" class="accent-emerald-500">
+                            <span class="text-gray-300">تطوع مجتمعي وتبادل</span>
+                        </label>
+                        <label class="flex items-center gap-2 bg-gray-800/60 border border-gray-700 rounded-xl p-2 cursor-pointer">
+                            <input type="checkbox" name="activity-pref" value="MENA_GCC_ASEAN_SPECIAL" class="accent-emerald-500">
+                            <span class="text-gray-300">الشرق الأوسط والخليج وآسيان</span>
+                        </label>
+                    </div>
+                </div>
 
                 <div class="bg-gray-800/40 p-3 rounded-xl border border-gray-700/30 text-[11px] text-gray-400 leading-normal">
                     💡 <strong>ملاحظة أمان:</strong> أي تعديل هنا ينعكس فوراً على خزانة الذاكرة المستدامة (SQLite Vault) ويعيد توليد الـ CV المخصص لكل فرصة بصورة تلقائية.
@@ -880,6 +910,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 document.getElementById('prof-matric').value = edu.matric_number || '';
                 document.getElementById('prof-cgpa').value = edu.cgpa || '';
                 document.getElementById('prof-address').value = p.address_my || '';
+                const activityPrefs = new Set(
+                    String(p.activity_preferences || '')
+                        .split(',')
+                        .map(item => item.trim())
+                        .filter(Boolean)
+                );
+                document.querySelectorAll('input[name="activity-pref"]').forEach(cb => {
+                    cb.checked = activityPrefs.has(cb.value);
+                });
                 document.getElementById('prof-github').value = p.github_url || '';
             } catch (err) {
                 console.error("Failed to load profile", err);
@@ -1174,6 +1213,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 matric_number: document.getElementById('prof-matric').value,
                 cgpa: document.getElementById('prof-cgpa').value,
                 address_my: document.getElementById('prof-address').value,
+                activity_preferences: Array.from(
+                    document.querySelectorAll('input[name="activity-pref"]:checked')
+                ).map(cb => cb.value).join(', '),
                 github_url: document.getElementById('prof-github').value,
             };
 

@@ -185,6 +185,10 @@ STANDARD_FIELD_CATALOG: Dict[str, Dict[str, str]] = {
         "label_ar": "مقاس القميص والمعدات الميدانية للمعسكرات البيئية والهاكاثونات (S/M/L/XL)",
         "category": "logistics",
     },
+    "activity_preferences": {
+        "label_ar": "تفضيلات أنواع الأنشطة (طبيعة، ذكاء اصطناعي أخضر، هاكاثونات، معسكرات، تطوع)",
+        "category": "preferences",
+    },
     "swimming_and_outdoor_fitness": {
         "label_ar": "مستوى اللياقة الميدانية والقدرة على السباحة (للمعسكرات البحرية والغابات)",
         "category": "outdoor",
@@ -318,6 +322,7 @@ DOM_ATTRIBUTE_TO_VAULT_KEY_RULES: List[Tuple[str, List[str]]] = [
     ("passport_number", ["passport_no", "passport_number", "passport_id", "رقم جواز السفر"]),
     ("dietary_preference", ["diet", "dietary", "food_preference", "meal_preference", "halal", "allergies"]),
     ("tshirt_and_gear_size", ["tshirt", "t-shirt", "shirt_size", "apparel_size", "gear_size"]),
+    ("activity_preferences", ["activity_preference", "activity preferences", "preferred activities", "type of activities", "activity types", "نوع النشاط", "تفضيلات الأنشطة"]),
     ("swimming_and_outdoor_fitness", ["swimming", "fitness", "physical_condition", "outdoor_experience"]),
     ("emergency_contact_info", ["emergency", "next_of_kin", "emergency_contact"]),
     ("tailored_motivation_essay", ["motivation", "statement_of_purpose", "why_apply", "essay", "cover_letter", "رسالة الدافع"]),
@@ -1229,6 +1234,11 @@ def load_seed_from_master_profile(config_dir: pathlib.Path) -> Dict[str, str]:
                 seed["dietary_preference"] = p["dietary_preference"]
             if p.get("apparel_size"):
                 seed["tshirt_and_gear_size"] = p["apparel_size"]
+            activity_prefs = p.get("activity_preferences")
+            if isinstance(activity_prefs, list):
+                activity_prefs = ", ".join(str(item) for item in activity_prefs)
+            if activity_prefs:
+                seed["activity_preferences"] = str(activity_prefs)
             if p.get("github_url"):
                 seed["github_or_portfolio_url"] = p["github_url"]
             if edu.get("institution"):

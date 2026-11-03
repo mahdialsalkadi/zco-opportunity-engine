@@ -55,21 +55,27 @@ def test_normalize_profile_updates_validates_and_preserves_clears():
             "cgpa": "3.53 / 4.00",
             "github_url": "https://github.com/example",
             "address_my": "",
+            "activity_preferences": " NATURE_ECO_CONSERVATION , OUTDOOR_LEADERSHIP_CAMPS ",
         }
     )
     assert errors == []
     assert cleaned["full_name_en"] == "Mohammad Mahdi"
     assert cleaned["address_my"] == ""
+    assert (
+        cleaned["activity_preferences"]
+        == "NATURE_ECO_CONSERVATION, OUTDOOR_LEADERSHIP_CAMPS"
+    )
 
     _cleaned, errors = normalize_profile_updates(
         {
             "email": "not-an-email",
             "github_url": "javascript:alert(1)",
             "cgpa": "3.53.1",
+            "activity_preferences": "NATURE_ECO_CONSERVATION, UNKNOWN_TRACK",
             "unknown_field": "x",
         }
     )
-    assert len(errors) == 4
+    assert len(errors) == 5
 
 
 def test_atomic_write_is_private_and_leaves_no_temp_files(tmp_path):
@@ -97,18 +103,32 @@ def test_portfolio_syncs_private_profiles_and_clears_vault_values(tmp_path):
     )
 
     pm = PortfolioManager(config_dir=config_dir)
-    pm.update_profile({"email": "mahdi@example.org", "cgpa": "3.53 / 4.00"})
+    pm.update_profile(
+        {
+            "email": "mahdi@example.org",
+            "cgpa": "3.53 / 4.00",
+            "activity_preferences": "NATURE_ECO_CONSERVATION, OUTDOOR_LEADERSHIP_CAMPS",
+        }
+    )
 
     candidate = json.loads(
         (config_dir / "candidate_profile.json").read_text(encoding="utf-8")
     )
     assert candidate["candidate"]["email"] == "mahdi@example.org"
     assert candidate["candidate"]["cgpa"] == "3.53 / 4.00"
+    assert (
+        candidate["candidate"]["activity_preferences"]
+        == "NATURE_ECO_CONSERVATION, OUTDOOR_LEADERSHIP_CAMPS"
+    )
 
     master = yaml.safe_load(
         (config_dir / "master_profile.yaml").read_text(encoding="utf-8")
     )
     assert master["personal"]["email"] == "mahdi@example.org"
+    assert (
+        master["personal"]["activity_preferences"]
+        == "NATURE_ECO_CONSERVATION, OUTDOOR_LEADERSHIP_CAMPS"
+    )
     assert master["education"]["cgpa"] == "3.53 / 4.00"
 
     db = OpportunityDatabase(tmp_path / "vault.db")
@@ -118,6 +138,13 @@ def test_portfolio_syncs_private_profiles_and_clears_vault_values(tmp_path):
             "SELECT field_value FROM candidate_vault WHERE field_key = 'email_address'"
         ).fetchone()
         assert row["field_value"] == "mahdi@example.org"
+        activities = conn.execute(
+            "SELECT field_value FROM candidate_vault WHERE field_key = 'activity_preferences'"
+        ).fetchone()
+        assert (
+            activities["field_value"]
+            == "NATURE_ECO_CONSERVATION, OUTDOOR_LEADERSHIP_CAMPS"
+        )
 
     pm.update_profile({"email": ""})
     with db.connect() as conn:
