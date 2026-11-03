@@ -21,13 +21,14 @@ BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
 from database import OpportunityDatabase
+from paths import DB_PATH
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--db-path",
-        default=str(BASE_DIR / "data" / "opportunities.db"),
+        default=str(DB_PATH),
         help="Path to the SQLite database",
     )
     parser.add_argument(

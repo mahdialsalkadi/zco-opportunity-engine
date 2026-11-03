@@ -40,9 +40,9 @@ if _VENV_PYTHON.exists() and pathlib.Path(sys.executable).resolve() != _VENV_PYT
         os.execv(str(_VENV_PYTHON), [str(_VENV_PYTHON)] + sys.argv)
 
 from database import OpportunityDatabase, RawOpportunityRecord
+from paths import DATA_DIR, DB_PATH, LOG_DIR
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent
-LOG_DIR = BASE_DIR / "data" / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "crawler_heartbeat.log"
 
@@ -218,8 +218,12 @@ def scaffold_live_test_portals(base_dir: pathlib.Path) -> Dict[str, str]:
     }
 
 
-def get_curated_seed_batch(base_dir: pathlib.Path = BASE_DIR) -> List[RawOpportunityRecord]:
-    """Returns verified local interactive test portals and zero-cost volunteering, beach cleanup & eco camps."""
+def get_curated_seed_batch(
+    base_dir: Optional[pathlib.Path] = None,
+) -> List[RawOpportunityRecord]:
+    """Returns verified local interactive test portals and zero-cost seed records."""
+    if base_dir is None:
+        base_dir = DATA_DIR.parent
     portals = scaffold_live_test_portals(base_dir)
     return [
         RawOpportunityRecord(
@@ -792,7 +796,7 @@ class AsyncOpportunityCrawler:
         errors = 0
 
         if include_curated_seed:
-            for rec in get_curated_seed_batch(BASE_DIR):
+            for rec in get_curated_seed_batch():
                 if not rec.source_type:
                     rec.source_type = (
                         "local_testbed"
@@ -895,7 +899,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--db-path",
-        default=str(BASE_DIR / "data" / "opportunities.db"),
+        default=str(DB_PATH),
         help="Path to SQLite database",
     )
     parser.add_argument(

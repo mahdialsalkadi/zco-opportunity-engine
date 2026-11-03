@@ -20,7 +20,9 @@ import pathlib
 import sys
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "data" / "opportunities.db"
+sys.path.insert(0, str(BASE_DIR))
+
+from paths import DB_PATH
 
 AGGREGATOR_DOMAINS = [
     "opportunitydesk.org",

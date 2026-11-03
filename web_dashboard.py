@@ -29,9 +29,14 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 import uvicorn
+
+from coverage_utils import coverage_summary
+from file_utils import atomic_write_text
+from paths import DASHBOARD_TOKEN_FILE as PATH_DASHBOARD_TOKEN_FILE
+from paths import DB_PATH
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
@@ -55,7 +60,7 @@ def _load_local_env() -> None:
 
 _load_local_env()
 
-DASHBOARD_TOKEN_FILE = BASE_DIR / "data" / "dashboard_token.txt"
+DASHBOARD_TOKEN_FILE = PATH_DASHBOARD_TOKEN_FILE
 AUTH_COOKIE_NAME = "zco_dashboard_token"
 
 
@@ -70,12 +75,7 @@ def _load_or_create_dashboard_token() -> tuple[str, str]:
             if len(stored) >= 24:
                 return stored, "file"
         token = secrets.token_urlsafe(32)
-        DASHBOARD_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        DASHBOARD_TOKEN_FILE.write_text(token + "\n", encoding="utf-8")
-        try:
-            os.chmod(DASHBOARD_TOKEN_FILE, 0o600)
-        except OSError:
-            pass
+        atomic_write_text(DASHBOARD_TOKEN_FILE, token + "\n", mode=0o600)
         return token, "generated"
     except OSError:
         # Last resort: ephemeral token, printed once below.
@@ -90,6 +90,7 @@ from portfolio_and_docs_engine import (
     CV_PDF_FILE,
     PortfolioManager,
     get_opportunity_arabic_explanation,
+    normalize_profile_updates,
 )
 from server import ZCOEngineController
 from typst_agentic_cv_engine import (
@@ -159,22 +160,30 @@ async def security_token_middleware(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     return response
 
-db = OpportunityDatabase(BASE_DIR / "data" / "opportunities.db")
+db = OpportunityDatabase(DB_PATH)
 vault = CandidateMemoryVault(db)
 applicant = AutonomousApplicantEngine(db, vault)
-controller = ZCOEngineController(db_path=BASE_DIR / "data" / "opportunities.db")
+controller = ZCOEngineController(db_path=DB_PATH)
 pm = PortfolioManager()
 
 
+def _parse_json_object(raw: Any) -> Dict[str, Any]:
+    try:
+        parsed = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 class ProfileUpdateRequest(BaseModel):
-    full_name_en: Optional[str] = None
-    email: Optional[str] = None
-    phone_my: Optional[str] = None
-    passport_number: Optional[str] = None
-    address_my: Optional[str] = None
-    cgpa: Optional[str] = None
-    matric_number: Optional[str] = None
-    github_url: Optional[str] = None
+    full_name_en: Optional[str] = Field(default=None, max_length=120)
+    email: Optional[str] = Field(default=None, max_length=254)
+    phone_my: Optional[str] = Field(default=None, max_length=30)
+    passport_number: Optional[str] = Field(default=None, max_length=20)
+    address_my: Optional[str] = Field(default=None, max_length=300)
+    cgpa: Optional[str] = Field(default=None, max_length=20)
+    matric_number: Optional[str] = Field(default=None, max_length=30)
+    github_url: Optional[str] = Field(default=None, max_length=300)
 
 
 @app.get("/healthz")
@@ -266,8 +275,8 @@ async def get_opportunities(
         if apply_url.startswith("file://"):
             apply_url = o.get("source_url", "https://www.frim.gov.my/")
 
-        cov = json.loads(o.get("financial_coverage_json") or "{}")
-        cov_summary = cov.get("coverage_summary_ar", "تغطية كاملة 100% (0 رسوم + سكن كامل + وجبات + مواصلات)")
+        cov = _parse_json_object(o.get("financial_coverage_json"))
+        cov_summary, cov_known = coverage_summary(cov)
 
         # Determine broad human category
         title_upper = title.upper()
@@ -322,6 +331,7 @@ async def get_opportunities(
             "source_confidence": o.get("source_confidence", 0),
             "deadline_confidence": o.get("deadline_confidence", 0),
             "financial_coverage_ar": cov_summary,
+            "coverage_known": cov_known,
             "explanation_ar": explanation_ar,
             "cv_required": cv_req,
             "cv_requirement_reason": cv_reason,
@@ -349,7 +359,7 @@ async def download_tailored_cv(code: str):
         )
 
     try:
-        res = synthesize_tailored_typst_cv(opp)
+        res = await run_in_threadpool(synthesize_tailored_typst_cv, opp)
         if res.get("status") == "generated" and res.get("pdf_path") and os.path.exists(res["pdf_path"]):
             return FileResponse(
                 path=res["pdf_path"],
@@ -362,7 +372,7 @@ async def download_tailored_cv(code: str):
         logger.error("Failed to render custom Typst CV for %s: %s", code, e)
         # Fallback to PortfolioManager if needed
         try:
-            pdf_path = pm.render_custom_cv_for_opportunity(opp)
+            pdf_path = await run_in_threadpool(pm.render_custom_cv_for_opportunity, opp)
             return FileResponse(
                 path=str(pdf_path),
                 filename=f"CV_Mohammad_Alsalkadi_{code}.pdf",
@@ -375,14 +385,14 @@ async def download_tailored_cv(code: str):
 @app.get("/api/cv/base")
 async def download_base_cv():
     try:
-        res = synthesize_base_reference_typst_cv(force_recompile=False)
+        res = await run_in_threadpool(synthesize_base_reference_typst_cv, force_recompile=False)
         if res.get("pdf_path") and os.path.exists(res["pdf_path"]):
             return FileResponse(
                 path=res["pdf_path"],
                 filename="CV_Mohammad_Mahdi_Alsalkadi_Reference.pdf",
                 media_type="application/pdf",
             )
-        pdf_path = pm.render_cv_pdf()
+        pdf_path = await run_in_threadpool(pm.render_cv_pdf)
         return FileResponse(
             path=str(pdf_path),
             filename="CV_Mohammad_Mahdi_Alsalkadi_Base.pdf",
@@ -399,8 +409,10 @@ async def get_opportunity_kit(code: str) -> Dict[str, Any]:
     if not opp:
         raise HTTPException(status_code=404, detail="Opportunity code not found")
 
-    essay = pm.synthesize_tailored_motivation_letter(opp)
-    cov = json.loads(opp.get("financial_coverage_json") or "{}")
+    essay = await run_in_threadpool(pm.synthesize_tailored_motivation_letter, opp)
+    cov = _parse_json_object(opp.get("financial_coverage_json"))
+    cov_summary, cov_known = coverage_summary(cov)
+    cov["coverage_summary_ar"] = cov_summary
     cv_req, cv_reason = is_cv_required_for_opportunity(opp)
 
     return {
@@ -408,6 +420,7 @@ async def get_opportunity_kit(code: str) -> Dict[str, Any]:
         "title": opp.get("title", ""),
         "organizer": opp.get("organizer", ""),
         "financial_coverage": cov,
+        "coverage_known": cov_known,
         "tailored_motivation_letter": essay,
         "cv_required": cv_req,
         "cv_requirement_reason": cv_reason,
@@ -482,37 +495,31 @@ async def get_candidate_profile() -> Dict[str, Any]:
     return pm.data
 
 
+def _apply_profile_update(values: Dict[str, str], clear_keys: set[str]) -> Dict[str, Any]:
+    pm.update_profile(values)
+    with db.connect() as conn:
+        pm.sync_to_sqlite_vault(conn, clear_keys=clear_keys)
+    return dict(pm.data)
+
+
 @app.post("/api/profile")
 async def update_candidate_profile(req: ProfileUpdateRequest) -> Dict[str, Any]:
-    p = pm.data.setdefault("personal", {})
-    edu = pm.data.setdefault("education", {})
+    supplied = {
+        field: getattr(req, field)
+        for field in req.model_fields_set
+        if getattr(req, field) is not None
+    }
+    cleaned, errors = normalize_profile_updates(supplied)
+    if errors:
+        raise HTTPException(status_code=422, detail=errors)
 
-    if req.full_name_en:
-        p["full_name_en"] = req.full_name_en
-    if req.email:
-        p["email"] = req.email
-        p["personal_email"] = req.email
-    if req.phone_my:
-        p["phone_my"] = req.phone_my
-    if req.passport_number:
-        p["passport_number"] = req.passport_number
-    if req.address_my:
-        p["address_my"] = req.address_my
-    if req.cgpa:
-        edu["cgpa"] = req.cgpa
-    if req.matric_number:
-        edu["matric_number"] = req.matric_number
-    if req.github_url:
-        p["github_url"] = req.github_url
-
-    pm.save()
-    with db.connect() as conn:
-        pm.sync_to_sqlite_vault(conn)
+    clear_keys = pm.vault_keys_to_clear(cleaned)
+    updated = await run_in_threadpool(_apply_profile_update, cleaned, clear_keys)
 
     return {
         "status": "success",
         "message": "Candidate profile updated and synchronized with vault.",
-        "profile": pm.data,
+        "profile": updated,
     }
 
 
@@ -531,7 +538,11 @@ async def trigger_crawl_cycle(background_tasks: BackgroundTasks) -> Dict[str, An
 
 @app.post("/api/audit")
 async def trigger_audit_cycle() -> Dict[str, Any]:
-    res = controller.run_six_hour_batch_audit(window_hours=48.0, auto_apply=False)
+    res = await run_in_threadpool(
+        controller.run_six_hour_batch_audit,
+        window_hours=48.0,
+        auto_apply=False,
+    )
     return res
 
 
@@ -807,21 +818,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 </div>
                 <div class="grid grid-cols-2 gap-3">
                     <div>
+                        <label class="block text-gray-400 mb-1 font-semibold">رقم جواز السفر:</label>
+                        <input type="text" id="prof-passport" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
+                    </div>
+                    <div>
                         <label class="block text-gray-400 mb-1 font-semibold">الرقم الجامعي (Matric Number):</label>
                         <input type="text" id="prof-matric" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
                     </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
                     <div>
                         <label class="block text-gray-400 mb-1 font-semibold">المعدل التراكمي (CGPA):</label>
                         <input type="text" id="prof-cgpa" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
+                    </div>
+                    <div>
+                        <label class="block text-gray-400 mb-1 font-semibold">رابط GitHub (اختياري):</label>
+                        <input type="url" id="prof-github" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
                     </div>
                 </div>
                 <div>
                     <label class="block text-gray-400 mb-1 font-semibold">عنوان السكن في كوالالمبور:</label>
                     <input type="text" id="prof-address" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
-                </div>
-                <div>
-                    <label class="block text-gray-400 mb-1 font-semibold">رابط GitHub (اختياري - محجوب ومستبعد تلقائياً عن السير الذاتية والتقديم):</label>
-                    <input type="url" id="prof-github" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
                 </div>
 
                 <div class="bg-gray-800/40 p-3 rounded-xl border border-gray-700/30 text-[11px] text-gray-400 leading-normal">
@@ -859,6 +876,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 document.getElementById('prof-name').value = p.full_name_en || '';
                 document.getElementById('prof-email').value = p.email || '';
                 document.getElementById('prof-phone').value = p.phone_my || '';
+                document.getElementById('prof-passport').value = p.passport_number || '';
                 document.getElementById('prof-matric').value = edu.matric_number || '';
                 document.getElementById('prof-cgpa').value = edu.cgpa || '';
                 document.getElementById('prof-address').value = p.address_my || '';
@@ -953,6 +971,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             const country = escHtml(opp.location_country);
             const categoryLabel = escHtml(opp.category_label_ar);
             const coverage = escHtml(opp.financial_coverage_ar);
+            const coverageKnown = Boolean(opp.coverage_known);
             const explanation = escHtml(opp.explanation_ar);
             const matchScore = Number.isFinite(Number(opp.match_score)) ? Number(opp.match_score) : 0;
             const sourceConfidence = Math.max(0, Math.min(100, Math.round(Number(opp.source_confidence || 0) * 100)));
@@ -1015,9 +1034,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     </div>
 
                     <!-- Financial Coverage Pill -->
-                    <div class="bg-gray-800/70 border border-emerald-500/20 p-3 rounded-xl mb-3 flex items-start space-x-2 space-x-reverse">
-                        <i class="fa-solid fa-gift text-emerald-400 mt-0.5 text-sm"></i>
-                        <div class="text-xs text-emerald-300 font-semibold leading-relaxed">
+                    <div class="bg-gray-800/70 border ${coverageKnown ? 'border-emerald-500/20' : 'border-amber-500/40'} p-3 rounded-xl mb-3 flex items-start space-x-2 space-x-reverse">
+                        <i class="fa-solid ${coverageKnown ? 'fa-gift text-emerald-400' : 'fa-circle-exclamation text-amber-400'} mt-0.5 text-sm"></i>
+                        <div class="text-xs ${coverageKnown ? 'text-emerald-300' : 'text-amber-300'} font-semibold leading-relaxed">
                             ${coverage}
                         </div>
                     </div>
@@ -1103,7 +1122,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
                 document.getElementById('modal-kit-title').innerText = kit.title;
                 document.getElementById('modal-kit-code').innerText = `كود: ${code} | الجهة: ${kit.organizer}`;
-                document.getElementById('modal-kit-cov').innerText = kit.financial_coverage.coverage_summary_ar || 'تغطية كاملة 100%';
+                document.getElementById('modal-kit-cov').innerText = kit.financial_coverage.coverage_summary_ar || 'غير محدد — تحقق من الجهة قبل التقديم';
                 document.getElementById('modal-kit-essay').innerText = kit.tailored_motivation_letter;
 
                 const cvNotice = document.getElementById('modal-kit-cv-notice');
@@ -1151,6 +1170,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 full_name_en: document.getElementById('prof-name').value,
                 email: document.getElementById('prof-email').value,
                 phone_my: document.getElementById('prof-phone').value,
+                passport_number: document.getElementById('prof-passport').value,
                 matric_number: document.getElementById('prof-matric').value,
                 cgpa: document.getElementById('prof-cgpa').value,
                 address_my: document.getElementById('prof-address').value,
@@ -1163,7 +1183,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
                 });
-                const data = await res.json();
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    const detail = Array.isArray(data.detail) ? data.detail.join('\n') : (data.detail || 'تحقق من صحة البيانات.');
+                    throw new Error(detail);
+                }
                 alert("✅ تم حفظ وتحديث بياناتك بنجاح!");
                 closeProfileModal();
                 loadProfile();

@@ -5,7 +5,7 @@
 [![Typst](https://img.shields.io/badge/typesetting-Typst%200.12+-239dad.svg)](https://typst.app/)
 [![Protocol](https://img.shields.io/badge/MCP-FastMCP-purple.svg)](https://modelcontextprotocol.io/)
 [![Database](https://img.shields.io/badge/database-SQLite%20WAL-lightgrey.svg)](https://www.sqlite.org/)
-[![Tests](https://img.shields.io/badge/tests-43%2F43%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-49%2F49%20passed-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An enterprise-grade, autonomous opportunity auditing, memory-learning, and programmatic application system engineered specifically for **Mohammad Mahdi Alsalkadi** (Syrian national, 1st-year Artificial Intelligence undergraduate at Universiti Teknologi Malaysia with honours, CGPA 3.53, Kuwait residency).
@@ -135,7 +135,7 @@ cp .env.example .env
 #   (chmod 600), or set it explicitly for remote access.
 # - Keep ZCO_AUTO_SUBMIT=0 unless you explicitly want unattended Submit clicks.
 
-# 4. Run the full automated test suite (43 unit & integration tests)
+# 4. Run the full automated test suite (49 unit & integration tests)
 pytest tests/ -v
 
 # 5. Verify Master Reference Typst CV synthesis (Strictly 1 Page, 0 Matric, 0 GitHub)
@@ -172,6 +172,13 @@ python3 supervisor.py --monitor --interval-seconds 30
 * **Supervisor hardening:** `supervisor.py --monitor` restarts dead services with capped exponential backoff, tracks restart counts, and rotates logs (`ZCO_LOG_MAX_BYTES`, `ZCO_LOG_BACKUPS`, `ZCO_MAX_RESTARTS`).
 * **CI hardening:** the workflow has read-only permissions, concurrency cancellation, a timeout, `compileall`, `pip check`, and a private-data/secret scan over tracked files.
 
+### Isolation & Data Integrity (Phase 2)
+
+* **Environment-scoped runtime paths:** `paths.py` is the single source of truth for the database, logs, generated documents, and private profiles. `ZCO_DATA_DIR` and `ZCO_CONFIG_DIR` relocate them, so tests and staging runs never migrate or overwrite production data.
+* **Atomic private writes:** portfolio snapshots, vault mirrors, the dashboard token, and supervisor state go through `file_utils.atomic_write_*`, which fsyncs a sibling temp file, sets mode `0600`, and atomically replaces the destination. Unreadable portfolio JSON is preserved as `comprehensive_portfolio.json.corrupt-<timestamp>` before reinitialization instead of being silently overwritten.
+* **Honest coverage labels:** when funding terms were not verified, the dashboard, Telegram cards, and matrix display `غير محدد — تحقق من الجهة قبل التقديم` instead of an invented "100% covered" claim.
+* **Validated profile edits:** the dashboard rejects malformed emails, phone numbers, passport numbers, CGPA values, and non-HTTP GitHub URLs. Explicitly emptying a field also clears the matching memory-vault row instead of leaving stale data behind.
+
 ---
 
 ## 6. ZCO-Hunter v4.2 Field-Ready Enhancements
@@ -203,6 +210,7 @@ python3 supervisor.py --monitor --interval-seconds 30
 │   └── cv_template.typ               # Parametric Typst CV template
 ├── tests/
 │   ├── test_phase1_reliability.py    # Migrations, provenance, confidence, private-data check
+│   ├── test_phase2_isolation.py      # Path isolation, atomic writes, coverage honesty
 │   ├── test_security_phase0.py       # Auth, escaping, receipt honesty regression tests
 │   ├── test_supervisor.py            # Log rotation & restart backoff
 │   ├── test_telegram_bot.py          # Bot interactions & card rendering
@@ -210,8 +218,12 @@ python3 supervisor.py --monitor --interval-seconds 30
 │   ├── test_v42_features.py          # Two-hop resolver, Google Forms ARIA, Reply-to-Learn, QA bank
 │   └── test_zco_engine.py            # Gatekeeper & eligibility testbed
 ├── async_crawler.py                  # 24/7 background opportunity discovery & two-hop resolver
+├── coverage_utils.py                 # Honest coverage labels (never invent a funding claim)
 ├── database.py                       # Concurrent SQLite state machine
+├── env_loader.py                     # Minimal .env loader used before path/config imports
+├── file_utils.py                     # Atomic 0600 writes for private runtime files
 ├── engines_and_auditor.py            # Eligibility gates, SPA form adapter, & Chromium filler
+├── paths.py                          # Single source of runtime paths (ZCO_DATA_DIR/ZCO_CONFIG_DIR)
 ├── portfolio_and_docs_engine.py      # SOP synthesis & HTML document fallback
 ├── server.py                         # FastMCP Server & batch audit CLI
 ├── supervisor.py                     # Multi-process daemon monitor

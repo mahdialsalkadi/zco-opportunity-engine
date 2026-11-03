@@ -16,18 +16,27 @@ import logging
 import os
 import pathlib
 import re
+import shutil
 import subprocess
+import threading
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
+
+import yaml
+
+from file_utils import atomic_write_json, atomic_write_text
+from paths import (
+    CONFIG_DIR,
+    CV_MD_FILE,
+    CV_PDF_FILE,
+    DATA_DIR,
+    DOCS_DIR,
+    PORTFOLIO_FILE,
+)
 
 logger = logging.getLogger("ZCO-PortfolioDocs")
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-DOCS_DIR = DATA_DIR / "documents"
-CONFIG_DIR = BASE_DIR / "config"
-PORTFOLIO_FILE = CONFIG_DIR / "comprehensive_portfolio.json"
-CV_PDF_FILE = DOCS_DIR / "cv_mohammad_mahdi.pdf"
-CV_MD_FILE = DOCS_DIR / "cv_mohammad_mahdi.md"
 
 
 AUTHENTIC_PORTFOLIO: Dict[str, Any] = {
@@ -156,11 +165,104 @@ AUTHENTIC_PORTFOLIO: Dict[str, Any] = {
 }
 
 
+PROFILE_FIELD_LOCATIONS: Dict[str, Tuple[str, str]] = {
+    "full_name_en": ("personal", "full_name_en"),
+    "email": ("personal", "email"),
+    "phone_my": ("personal", "phone_my"),
+    "passport_number": ("personal", "passport_number"),
+    "address_my": ("personal", "address_my"),
+    "cgpa": ("education", "cgpa"),
+    "matric_number": ("education", "matric_number"),
+    "github_url": ("personal", "github_url"),
+}
+
+VAULT_KEY_BY_PROFILE_FIELD: Dict[str, str] = {
+    "full_name_en": "full_name",
+    "email": "email_address",
+    "phone_my": "phone_whatsapp_my",
+    "passport_number": "passport_number",
+    "address_my": "residential_address_my",
+    "cgpa": "current_cgpa",
+    "matric_number": "utm_matric_number",
+    "github_url": "github_or_portfolio_url",
+}
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_PHONE_RE = re.compile(r"^[+0-9()\-\s]{6,30}$")
+_PASSPORT_RE = re.compile(r"^[A-Za-z0-9-]{5,20}$")
+_MATRIC_RE = re.compile(r"^[A-Za-z0-9-]{3,30}$")
+_CGPA_RE = re.compile(r"^\d{1,2}(\.\d{1,2})?(\s*/\s*\d{1,2}(\.\d{1,2})?)?$")
+
+
+def normalize_profile_updates(
+    values: Dict[str, Any],
+) -> Tuple[Dict[str, str], List[str]]:
+    """Trim and validate fields explicitly supplied by the dashboard.
+
+    Empty strings are preserved so the caller can distinguish "clear this
+    field" from "leave it untouched". The model's ``model_fields_set`` is the
+    source of that distinction, not truthiness.
+    """
+    cleaned: Dict[str, str] = {}
+    errors: List[str] = []
+    for field, raw in values.items():
+        if raw is None:
+            continue
+        value = str(raw).strip()
+        cleaned[field] = value
+        if not value:
+            continue
+
+        if field == "full_name_en":
+            if len(value) > 120:
+                errors.append("full_name_en must be 120 characters or fewer.")
+            if any(ord(ch) < 32 for ch in value):
+                errors.append("full_name_en contains control characters.")
+        elif field == "email":
+            if len(value) > 254 or not _EMAIL_RE.match(value):
+                errors.append("email is not a valid address.")
+        elif field == "phone_my":
+            if not _PHONE_RE.match(value):
+                errors.append("phone_my must contain only digits, spaces, +, -, or parentheses.")
+        elif field == "passport_number":
+            if not _PASSPORT_RE.match(value):
+                errors.append("passport_number must be 5-20 letters, digits, or hyphens.")
+        elif field == "matric_number":
+            if not _MATRIC_RE.match(value):
+                errors.append("matric_number must be 3-30 letters, digits, or hyphens.")
+        elif field == "cgpa":
+            if not _CGPA_RE.match(value):
+                errors.append("cgpa must look like 3.53 or 3.53 / 4.00.")
+        elif field == "address_my":
+            if len(value) > 300:
+                errors.append("address_my must be 300 characters or fewer.")
+        elif field == "github_url":
+            if len(value) > 300:
+                errors.append("github_url must be 300 characters or fewer.")
+            else:
+                parsed = urlparse(value)
+                if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                    errors.append("github_url must be an absolute http(s) URL.")
+        else:
+            errors.append(f"Unknown profile field: {field}")
+    return cleaned, errors
+
+
 class PortfolioManager:
     """Manages profile persistence, CV generation, and Motivation Letter drafting."""
 
-    def __init__(self, portfolio_path: Optional[pathlib.Path] = None) -> None:
-        self.portfolio_path = portfolio_path or PORTFOLIO_FILE
+    def __init__(
+        self,
+        portfolio_path: Optional[pathlib.Path] = None,
+        config_dir: Optional[pathlib.Path] = None,
+    ) -> None:
+        self.config_dir = pathlib.Path(config_dir) if config_dir else CONFIG_DIR
+        self.portfolio_path = (
+            pathlib.Path(portfolio_path)
+            if portfolio_path
+            else self.config_dir / "comprehensive_portfolio.json"
+        )
+        self._lock = threading.RLock()
         self.data: Dict[str, Any] = {}
         self.load_or_initialize()
 
@@ -169,12 +271,24 @@ class PortfolioManager:
         if self.portfolio_path.exists():
             try:
                 with open(self.portfolio_path, "r", encoding="utf-8") as f:
-                    self.data = json.load(f)
+                    loaded = json.load(f)
+                if not isinstance(loaded, dict):
+                    raise ValueError("portfolio JSON root must be an object")
+                self.data = loaded
                 # Ensure updated fields are merged
                 self._ensure_updated_fields()
                 return self.data
             except Exception as e:
                 logger.error("Failed to load portfolio: %s", e)
+                stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                backup = self.portfolio_path.with_name(
+                    f"{self.portfolio_path.name}.corrupt-{stamp}"
+                )
+                try:
+                    shutil.copy2(self.portfolio_path, backup)
+                    logger.error("Preserved unreadable portfolio at %s", backup)
+                except OSError as backup_exc:
+                    logger.error("Could not preserve unreadable portfolio: %s", backup_exc)
 
         self.data = json.loads(json.dumps(AUTHENTIC_PORTFOLIO))
         self.save()
@@ -198,33 +312,111 @@ class PortfolioManager:
                 _merge_missing(self.data[section], defaults)
 
     def save(self) -> None:
-        """Persists portfolio data to JSON and syncs with candidate_profile.json."""
-        self.portfolio_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.portfolio_path, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, indent=2, ensure_ascii=False)
-
-        # Sync to candidate_profile.json
-        candidate_json_path = CONFIG_DIR / "candidate_profile.json"
-        if candidate_json_path.exists():
+        """Persist portfolio data and sync derived private profiles atomically."""
+        with self._lock:
+            atomic_write_json(self.portfolio_path, self.data)
             try:
-                with open(candidate_json_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
+                self._sync_candidate_profile()
+            except Exception as exc:
+                logger.warning("Could not sync candidate_profile.json: %s", exc)
+            try:
+                self._sync_master_profile()
+            except Exception as exc:
+                logger.warning("Could not sync master_profile.yaml: %s", exc)
 
-                cfg.setdefault("candidate", {})
-                cfg["candidate"]["full_name"] = self.data["personal"]["full_name_en"]
-                cfg["candidate"]["email"] = self.data["personal"]["email"]
-                cfg["candidate"]["matric_number"] = self.data["education"]["matric_number"]
-                cfg["candidate"]["cgpa"] = self.data["education"]["cgpa"]
-                cfg["candidate"]["github"] = self.data["personal"]["github_url"]
-                cfg["candidate"]["address"] = self.data["personal"]["address_my"]
+    def update_profile(self, values: Dict[str, str]) -> Dict[str, Any]:
+        """Apply normalized profile fields, including explicit empty clears."""
+        with self._lock:
+            for field, value in values.items():
+                location = PROFILE_FIELD_LOCATIONS.get(field)
+                if location is None:
+                    continue
+                section, key = location
+                self.data.setdefault(section, {})[key] = value
+                if field == "email":
+                    self.data.setdefault("personal", {})["personal_email"] = value
+            self.save()
+            return dict(self.data)
 
-                with open(candidate_json_path, "w", encoding="utf-8") as f:
-                    json.dump(cfg, f, indent=2, ensure_ascii=False)
-            except Exception as e:
-                logger.warning("Could not sync candidate_profile.json: %s", e)
+    @staticmethod
+    def vault_keys_to_clear(values: Dict[str, str]) -> set[str]:
+        """Vault keys whose dashboard values were explicitly emptied."""
+        return {
+            VAULT_KEY_BY_PROFILE_FIELD[field]
+            for field, value in values.items()
+            if field in VAULT_KEY_BY_PROFILE_FIELD and value == ""
+        }
 
-    def sync_to_sqlite_vault(self, db_conn) -> None:
-        """Syncs all key fields from portfolio into SQLite candidate_vault table."""
+    def _sync_candidate_profile(self) -> None:
+        candidate_path = self.config_dir / "candidate_profile.json"
+        example_path = self.config_dir / "candidate_profile.example.json"
+        cfg: Dict[str, Any] = {}
+        source_path = candidate_path if candidate_path.exists() else example_path
+        if source_path.exists():
+            cfg = json.loads(source_path.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            cfg = {}
+        candidate = cfg.setdefault("candidate", {})
+        personal = self.data.get("personal", {})
+        education = self.data.get("education", {})
+        mapping = {
+            "full_name": personal.get("full_name_en"),
+            "email": personal.get("email"),
+            "phone": personal.get("phone_my"),
+            "passport_number": personal.get("passport_number"),
+            "matric_number": education.get("matric_number"),
+            "cgpa": education.get("cgpa"),
+            "github": personal.get("github_url"),
+            "address": personal.get("address_my"),
+        }
+        for key, value in mapping.items():
+            if value is not None:
+                candidate[key] = value
+        atomic_write_json(candidate_path, cfg)
+
+    def _sync_master_profile(self) -> bool:
+        master_path = self.config_dir / "master_profile.yaml"
+        if not master_path.exists():
+            return False
+        ydata = yaml.safe_load(master_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(ydata, dict):
+            raise ValueError("master_profile.yaml root must be a mapping")
+        personal = ydata.setdefault("personal", {})
+        education = ydata.setdefault("education", {})
+        source_personal = self.data.get("personal", {})
+        source_education = self.data.get("education", {})
+        personal_mapping = {
+            "full_name_en": "full_name_en",
+            "email": "email",
+            "phone_my": "phone_my",
+            "passport_number": "passport_number",
+            "github_url": "github_url",
+            "address_my": "current_residence",
+        }
+        for source_key, target_key in personal_mapping.items():
+            if source_key in source_personal:
+                personal[target_key] = source_personal[source_key]
+        for source_key, target_key in (
+            ("matric_number", "matric_number"),
+            ("cgpa", "cgpa"),
+        ):
+            if source_key in source_education:
+                education[target_key] = source_education[source_key]
+        atomic_write_text(
+            master_path,
+            yaml.safe_dump(ydata, allow_unicode=True, sort_keys=False),
+        )
+        return True
+
+    def sync_to_sqlite_vault(
+        self, db_conn, clear_keys: Optional[set[str]] = None
+    ) -> None:
+        """Syncs all key fields from portfolio into SQLite candidate_vault table.
+
+        ``clear_keys`` contains vault field keys the user explicitly emptied in
+        the dashboard. Those rows are deleted instead of silently retaining the
+        previous value.
+        """
         p = self.data.get("personal", {})
         edu = self.data.get("education", {})
 
@@ -247,6 +439,7 @@ class PortfolioManager:
             ("departure_airport", p.get("departure_airport", ""), "logistics", "مطار المغادرة المفضل"),
             ("email_address", p.get("email", ""), "contact", "البريد الإلكتروني الرسمي"),
             ("phone_whatsapp_my", p.get("phone_my", ""), "contact", "رقم الهاتف / واتساب"),
+            ("passport_number", p.get("passport_number", ""), "identity", "رقم جواز السفر"),
             ("github_or_portfolio_url", p.get("github_url", ""), "academic", "رابط GitHub أو المعرض البرمجي"),
             ("dietary_preference", p.get("dietary_preference", ""), "logistics", "التفضيلات الغذائية"),
             ("tshirt_and_gear_size", p.get("tshirt_size", ""), "logistics", "مقاس القميص والمعدات الميدانية"),
@@ -256,8 +449,13 @@ class PortfolioManager:
 
         cursor = db_conn.cursor()
         now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
+        clear_keys = clear_keys or set()
         for key, val, cat, label_ar in mappings:
             if val in (None, ""):
+                if key in clear_keys:
+                    cursor.execute(
+                        "DELETE FROM candidate_vault WHERE field_key = ?", (key,)
+                    )
                 continue
             cursor.execute(
                 """

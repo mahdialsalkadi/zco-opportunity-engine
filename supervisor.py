@@ -33,10 +33,12 @@ if _VENV_PYTHON.exists() and pathlib.Path(sys.executable).resolve() != _VENV_PYT
     if "-c" not in sys.argv:
         os.execv(str(_VENV_PYTHON), [str(_VENV_PYTHON)] + sys.argv)
 
+from file_utils import atomic_write_json
+from paths import LOG_DIR, SUPERVISOR_STATE_FILE
+
 BASE_DIR = pathlib.Path(__file__).resolve().parent
-LOG_DIR = BASE_DIR / "data" / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
-PID_FILE = BASE_DIR / "data" / "supervisor_state.json"
+PID_FILE = SUPERVISOR_STATE_FILE
 MAX_LOG_BYTES = int(os.environ.get("ZCO_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
 LOG_BACKUPS = int(os.environ.get("ZCO_LOG_BACKUPS", "3"))
 MAX_RESTARTS = int(os.environ.get("ZCO_MAX_RESTARTS", "5"))
@@ -97,8 +99,7 @@ def load_state() -> Dict[str, Any]:
 
 
 def save_state(state: Dict[str, Any]) -> None:
-    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PID_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    atomic_write_json(PID_FILE, state)
 
 
 def is_pid_running(pid: int) -> bool:

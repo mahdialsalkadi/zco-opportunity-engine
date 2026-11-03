@@ -25,16 +25,18 @@ if _VENV_PYTHON.exists() and pathlib.Path(sys.executable).resolve() != _VENV_PYT
         os.execv(str(_VENV_PYTHON), [str(_VENV_PYTHON)] + sys.argv)
 
 from database import OpportunityDatabase, OpportunityStatus
+from coverage_utils import coverage_summary
 from engines_and_auditor import (
     AutonomousApplicantEngine,
     CandidateMemoryVault,
     DEFAULT_CANDIDATE_PROFILE,
     audit_opportunity_record,
 )
+from paths import DASHBOARD_PATH, DB_PATH
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent
-DEFAULT_DB_PATH = BASE_DIR / "data" / "opportunities.db"
-DEFAULT_DASHBOARD_PATH = BASE_DIR / "data" / "dashboards" / "verified_opportunities_matrix.md"
+DEFAULT_DB_PATH = DB_PATH
+DEFAULT_DASHBOARD_PATH = DASHBOARD_PATH
 
 TRACK_LABELS_AR: Dict[str, str] = {
     "NATURE_ECO_CONSERVATION": "1. أنشطة الطبيعة والبيئة والحفظ البيئي (Nature, Eco & Conservation)",
@@ -304,7 +306,7 @@ class ZCOEngineController:
                 out.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
                 for item in track_items:
                     cov = json.loads(item.get("financial_coverage_json") or "{}")
-                    cov_text = cov.get("coverage_summary_ar", "ممول بالكامل (0 رسوم)")
+                    cov_text, _cov_known = coverage_summary(cov)
                     status_str = self._format_application_status_cell(item)
                     disp_url = self._clean_display_url(item)
                     title_link = f"[{item['title']}]({disp_url}) — *{item['organizer']}*"
@@ -318,7 +320,7 @@ class ZCOEngineController:
                 out.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
                 for item in track_items:
                     cov = json.loads(item.get("financial_coverage_json") or "{}")
-                    cov_text = cov.get("coverage_summary_ar", "ممول بالكامل شاملاً الطيران")
+                    cov_text, _cov_known = coverage_summary(cov)
                     status_str = self._format_application_status_cell(item)
                     elig_visa = f"{item['matched_jurisdiction_track']} ({item['visa_support_summary']})"
                     disp_url = self._clean_display_url(item)

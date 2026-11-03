@@ -32,20 +32,23 @@ from typing import Any, Dict, List, Optional, Tuple
 import pypdf
 import yaml
 
+from paths import (
+    BASE_REFERENCE_JSON_PATH,
+    BASE_REFERENCE_PDF_PATH,
+    CONFIG_DIR,
+    CUSTOM_CVS_DIR,
+    DATA_DIR,
+    DOCS_DIR,
+    MASTER_PROFILE_PATH,
+)
+
 logger = logging.getLogger("ZCO-TypstAgent")
 
 BASE_DIR = pathlib.Path(__file__).resolve().parent
-CONFIG_DIR = BASE_DIR / "config"
 TEMPLATES_DIR = BASE_DIR / "templates"
-DATA_DIR = BASE_DIR / "data"
-DOCS_DIR = DATA_DIR / "documents"
-CUSTOM_CVS_DIR = DOCS_DIR / "custom_cvs"
-CUSTOM_CVS_DIR.mkdir(parents=True, exist_ok=True)
 
-MASTER_PROFILE_PATH = CONFIG_DIR / "master_profile.yaml"
+CUSTOM_CVS_DIR.mkdir(parents=True, exist_ok=True)
 TYPST_TEMPLATE_PATH = TEMPLATES_DIR / "cv_template.typ"
-BASE_REFERENCE_PDF_PATH = DOCS_DIR / "CV_Mohammad_Mahdi_Alsalkadi_Reference.pdf"
-BASE_REFERENCE_JSON_PATH = CUSTOM_CVS_DIR / "data_base_reference.json"
 
 
 # =============================================================================
@@ -560,15 +563,22 @@ class TypstCompiler:
     ) -> bool:
         output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Path relative to project root
-        rel_json_path = json_payload_path.resolve().relative_to(BASE_DIR.resolve())
+        json_path = json_payload_path.resolve()
+        template = template_path.resolve()
+        # ``ZCO_DATA_DIR`` may point outside the repository (tests, isolated
+        # deployments), so choose a Typst root containing both the template and
+        # the payload instead of assuming BASE_DIR.
+        root = pathlib.Path(
+            os.path.commonpath([str(BASE_DIR.resolve()), str(template), str(json_path)])
+        )
+        rel_json_path = json_path.relative_to(root).as_posix()
 
         cmd = [
             "typst",
             "compile",
-            "--root", str(BASE_DIR.resolve()),
+            "--root", str(root),
             "--input", f"data_path=/{rel_json_path}",
-            str(template_path.resolve()),
+            str(template),
             str(output_pdf_path.resolve()),
         ]
 

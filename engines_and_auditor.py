@@ -46,6 +46,8 @@ logger = logging.getLogger("zco_engines")
 
 from bs4 import BeautifulSoup
 from database import OpportunityDatabase, OpportunityStatus
+from file_utils import atomic_write_json, atomic_write_text
+from paths import CANDIDATE_PROFILE_PATH
 from portfolio_and_docs_engine import PortfolioManager
 
 
@@ -1189,9 +1191,10 @@ class TriJurisdictionEligibilityEngine:
 def load_seed_from_master_profile(config_dir: pathlib.Path) -> Dict[str, str]:
     seed = dict(INITIAL_KNOWN_VAULT_SEED)
     master_yaml = config_dir / "master_profile.yaml"
-    if not master_yaml.exists():
-        master_yaml = config_dir / "master_profile.example.yaml"
 
+    # Deliberately do not seed the vault from master_profile.example.yaml.
+    # Placeholder names/emails must never be treated as the candidate's real
+    # facts just because a private profile has not been created yet.
     if master_yaml.exists():
         try:
             import yaml
@@ -1257,9 +1260,7 @@ class CandidateMemoryVault:
         profile_json_path: Optional[pathlib.Path] = None,
     ) -> None:
         self.db = db
-        self.profile_json_path = profile_json_path or (
-            db.db_path.parent.parent / "config" / "candidate_profile.json"
-        )
+        self.profile_json_path = profile_json_path or CANDIDATE_PROFILE_PATH
         self._ensure_initial_seed()
 
     def _ensure_initial_seed(self) -> None:
@@ -1352,7 +1353,6 @@ class CandidateMemoryVault:
         self.learn_from_user_answers({key: val})
 
     def _sync_to_profile_json(self) -> None:
-        self.profile_json_path.parent.mkdir(parents=True, exist_ok=True)
         existing_data: Dict[str, Any] = {}
         if self.profile_json_path.exists():
             try:
@@ -1361,39 +1361,59 @@ class CandidateMemoryVault:
                 existing_data = {}
         elif (self.profile_json_path.parent / "candidate_profile.example.json").exists():
             try:
-                existing_data = json.loads((self.profile_json_path.parent / "candidate_profile.example.json").read_text(encoding="utf-8"))
+                existing_data = json.loads(
+                    (self.profile_json_path.parent / "candidate_profile.example.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
             except Exception:
                 existing_data = {}
+        if not isinstance(existing_data, dict):
+            existing_data = {}
 
         existing_data["learned_memory_vault"] = self.get_known_fields()
         existing_data["vault_last_synced_utc"] = dt.datetime.now(dt.timezone.utc).isoformat()
-        self.profile_json_path.write_text(
-            json.dumps(existing_data, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
+        try:
+            atomic_write_json(self.profile_json_path, existing_data)
+        except OSError as exc:
+            logger.warning("Could not write candidate profile JSON: %s", exc)
 
-        # Synchronize with master_profile.yaml as single source of truth
+        # Synchronize with master_profile.yaml as single source of truth.
         master_yaml_path = self.profile_json_path.parent / "master_profile.yaml"
         if master_yaml_path.exists():
             try:
                 import yaml
-                with open(master_yaml_path, "r", encoding="utf-8") as f:
-                    ydata = yaml.safe_load(f) or {}
+
+                ydata = yaml.safe_load(master_yaml_path.read_text(encoding="utf-8")) or {}
+                if not isinstance(ydata, dict):
+                    raise ValueError("master_profile.yaml root must be a mapping")
                 known = self.get_known_fields()
                 p = ydata.setdefault("personal", {})
                 edu = ydata.setdefault("education", {})
-                if "email_address" in known:
-                    p["email"] = known["email_address"]
-                if "phone_whatsapp_my" in known:
-                    p["phone_my"] = known["phone_whatsapp_my"]
-                if "residential_address_my" in known:
-                    p["current_residence"] = known["residential_address_my"]
-                if "current_cgpa" in known:
-                    edu["cgpa"] = known["current_cgpa"]
-                with open(master_yaml_path, "w", encoding="utf-8") as f:
-                    yaml.safe_dump(ydata, f, allow_unicode=True, sort_keys=False)
-            except Exception:
-                pass
+                personal_mapping = {
+                    "full_name": "full_name_en",
+                    "email_address": "email",
+                    "phone_whatsapp_my": "phone_my",
+                    "residential_address_my": "current_residence",
+                    "passport_number": "passport_number",
+                    "github_or_portfolio_url": "github_url",
+                }
+                for source_key, target_key in personal_mapping.items():
+                    if source_key in known:
+                        p[target_key] = known[source_key]
+                education_mapping = {
+                    "utm_matric_number": "matric_number",
+                    "current_cgpa": "cgpa",
+                }
+                for source_key, target_key in education_mapping.items():
+                    if source_key in known:
+                        edu[target_key] = known[source_key]
+                atomic_write_text(
+                    master_yaml_path,
+                    yaml.safe_dump(ydata, allow_unicode=True, sort_keys=False),
+                )
+            except Exception as exc:
+                logger.warning("Could not sync master profile YAML: %s", exc)
 
 
 class AutonomousApplicantEngine:

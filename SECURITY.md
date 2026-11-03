@@ -25,6 +25,19 @@ If any of these were ever committed or shared, treat their contents as exposed:
 3. Change any leaked personal identifiers where the receiving organization allows it.
 4. Purge the file from git history before publishing the repository again.
 
+## Runtime Data Isolation
+
+`paths.py` resolves every runtime location from `ZCO_DATA_DIR` and `ZCO_CONFIG_DIR`
+(defaults: `data/` and `config/`). Tests point both at a throwaway directory before
+any module is imported, so a test run cannot migrate the production database or
+overwrite a private profile.
+
+Portfolio snapshots, memory-vault mirrors, the dashboard token, and supervisor state
+are written through `file_utils.atomic_write_*`: a sibling temp file is fsynced, set to
+mode `0600`, and atomically renamed over the destination. Unreadable portfolio JSON is
+preserved as `comprehensive_portfolio.json.corrupt-<UTC timestamp>` before the file is
+reinitialized.
+
 ## Authentication Model
 
 - **Web dashboard:** every route except `/healthz` and `/favicon.ico` requires a valid
@@ -42,6 +55,8 @@ If any of these were ever committed or shared, treat their contents as exposed:
 - `APPLIED_AUTOMATICALLY` requires a captured confirmation reference.
 - A clicked-but-unconfirmed submission is `SUBMITTED_UNCONFIRMED`, never a success.
 - CV compile failures block submission and record `APPLICATION_FAILED`.
+- When funding terms were not verified, coverage displays as unknown rather than as a
+  fabricated "100% covered" claim.
 
 Legacy synthetic receipts (including local testbed fixtures) can be reviewed and downgraded with:
 

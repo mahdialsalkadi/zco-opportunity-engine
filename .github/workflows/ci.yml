@@ -51,7 +51,7 @@ jobs:
 
       - name: Compile Python Modules
         run: |
-          python -m compileall -q async_crawler.py database.py engines_and_auditor.py install_zco_plugin.py portfolio_and_docs_engine.py server.py supervisor.py telegram_bot.py typst_agentic_cv_engine.py web_dashboard.py scripts
+          python -m compileall -q async_crawler.py coverage_utils.py database.py engines_and_auditor.py env_loader.py file_utils.py install_zco_plugin.py paths.py portfolio_and_docs_engine.py server.py supervisor.py telegram_bot.py typst_agentic_cv_engine.py web_dashboard.py scripts
 
       - name: Verify Dependency Consistency
         run: |

@@ -22,7 +22,8 @@ import pytest
 BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
-from database import OpportunityDatabase, OpportunityStatus, RawOpportunityRecord
+import paths  # noqa: E402
+from database import OpportunityDatabase, OpportunityStatus, RawOpportunityRecord  # noqa: E402
 from engines_and_auditor import (
     AutonomousApplicantEngine,
     CandidateMemoryVault,
@@ -177,7 +178,7 @@ def test_candidate_memory_vault_learning(temp_db, tmp_path):
 
 
 def test_pdf_guidelines_extractor():
-    pdf_path = BASE_DIR / "data" / "documents" / "cv_mohammad_mahdi.pdf"
+    pdf_path = paths.DOCS_DIR / "cv_mohammad_mahdi.pdf"
     if not pdf_path.exists():
         from typst_agentic_cv_engine import synthesize_base_reference_typst_cv
         res = synthesize_base_reference_typst_cv()
@@ -214,7 +215,7 @@ def test_html_form_introspection():
 
 
 def test_real_browser_form_auto_filler(tmp_path):
-    portal_path = BASE_DIR / "data" / "live_portals" / "frim_green_ai_portal.html"
+    portal_path = paths.DATA_DIR / "live_portals" / "frim_green_ai_portal.html"
     assert portal_path.exists()
 
     filler = RealBrowserFormAutoFiller(screenshots_dir=tmp_path / "screenshots")
@@ -252,7 +253,7 @@ def test_full_controller_batch_and_dashboard(tmp_path):
         title="Malaysia Green-AI Rainforest Hackathon 2027",
         organizer="FRIM & AI Malaysia",
         source_url="https://www.frim.gov.my/",
-        apply_url=f"file://{(BASE_DIR / 'data' / 'live_portals' / 'frim_green_ai_portal.html').resolve()}",
+        apply_url=f"file://{(paths.DATA_DIR / 'live_portals' / 'frim_green_ai_portal.html').resolve()}",
         location_country="Malaysia",
         location_city="Kuala Lumpur",
         is_inside_malaysia=True,

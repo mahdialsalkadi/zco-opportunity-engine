@@ -64,6 +64,7 @@ def _load_local_env() -> None:
 _load_local_env()
 
 from database import OpportunityDatabase, OpportunityStatus
+from coverage_utils import coverage_summary
 from engines_and_auditor import (
     AutonomousApplicantEngine,
     CandidateMemoryVault,
@@ -71,6 +72,9 @@ from engines_and_auditor import (
     ZeroCostGatekeeper,
     audit_opportunity_record,
 )
+from paths import DB_PATH as DEFAULT_DB_PATH
+from paths import LOG_DIR as PATH_LOG_DIR
+from paths import TELEGRAM_CONFIG_PATH
 from portfolio_and_docs_engine import (
     CV_PDF_FILE,
     PORTFOLIO_FILE,
@@ -84,7 +88,7 @@ from typst_agentic_cv_engine import (
     synthesize_base_reference_typst_cv,
 )
 
-LOG_DIR = BASE_DIR / "data" / "logs"
+LOG_DIR = PATH_LOG_DIR
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "telegram_bot.log"
 
@@ -121,7 +125,7 @@ for _handler in logging.getLogger().handlers + logger.handlers:
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-DEFAULT_CONFIG_PATH = BASE_DIR / "config" / "telegram_config.json"
+DEFAULT_CONFIG_PATH = TELEGRAM_CONFIG_PATH
 DEFAULT_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
 
@@ -191,7 +195,8 @@ def format_opportunity_card(opp: Dict[str, Any]) -> Tuple[str, InlineKeyboardMar
     apply_url = _safe_http_url(apply_url)
 
     cov = json.loads(opp.get("financial_coverage_json") or "{}")
-    cov_ar = _esc(cov.get("coverage_summary_ar", "تغطية كاملة 100% (0 رسوم + سكن + وجبات + مواصلات/طيران)"))
+    cov_text, _cov_known = coverage_summary(cov)
+    cov_ar = _esc(cov_text)
     source_confidence = opp.get("source_confidence", 0)
     try:
         source_confidence_pct = max(0, min(100, round(float(source_confidence) * 100)))
@@ -302,7 +307,7 @@ def format_opportunity_card(opp: Dict[str, Any]) -> Tuple[str, InlineKeyboardMar
 
 class ZCOTelegramBotService:
     def __init__(self, db_path: Optional[pathlib.Path] = None) -> None:
-        self.db_path = db_path or (BASE_DIR / "data" / "opportunities.db")
+        self.db_path = db_path or DEFAULT_DB_PATH
         self.db = OpportunityDatabase(self.db_path)
         self.vault = CandidateMemoryVault(self.db)
         self.applicant = AutonomousApplicantEngine(self.db, self.vault)
@@ -943,7 +948,7 @@ class ZCOTelegramBotService:
             kit = self.controller.prepare_application_kit(opp_code)
             letter = kit.get("tailored_motivation_letter", "")
             cov = kit.get("financial_coverage", {})
-            cov_summary = cov.get("coverage_summary_ar", "تغطية كاملة")
+            cov_summary, _cov_known = coverage_summary(cov)
 
             kit_text = (
                 f"📄 <b>ملف التقديم الجاهز ({_esc(opp_code)}):</b>\n"
