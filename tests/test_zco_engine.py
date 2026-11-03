@@ -145,6 +145,30 @@ def test_tri_jurisdiction_eligibility_engine():
     assert res_phd.is_eligible is False
     assert "دكتوراه" in res_phd.rejection_reason
 
+    # Ineligible: Women / Female only
+    opp_women = {
+        "title": "Swedish Institute Pioneering Women in STEM Scholarship 2027",
+        "is_inside_malaysia": 0,
+        "track_category": "GREEN_AI_CLIMATE_TECH",
+        "raw_description": "Fully funded master scholarship in Sweden for talented women and future female leaders.",
+        "raw_terms_text": "Must be a female citizen of one of the eligible countries.",
+    }
+    res_women = engine.evaluate(opp_women)
+    assert res_women.is_eligible is False
+    assert "إناث" in res_women.rejection_reason or "Women" in res_women.rejection_reason
+
+    # Ineligible: Master's degree requiring completed Bachelor's degree
+    opp_masters = {
+        "title": "Graduate Master Degree Scholarship in Europe",
+        "is_inside_malaysia": 0,
+        "track_category": "CORE_AI_HACKATHONS",
+        "raw_description": "For master's studies beginning in autumn. Applicants must hold a bachelor's degree.",
+        "raw_terms_text": "Must have already graduated from undergraduate studies.",
+    }
+    res_masters = engine.evaluate(opp_masters)
+    assert res_masters.is_eligible is False
+    assert "دراسات عليا" in res_masters.rejection_reason
+
 
 def test_candidate_memory_vault_learning(temp_db, tmp_path):
     profile_json = tmp_path / "candidate_profile.json"

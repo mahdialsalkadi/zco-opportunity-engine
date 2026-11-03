@@ -55,6 +55,7 @@ from portfolio_and_docs_engine import PortfolioManager
 DEFAULT_CANDIDATE_PROFILE: Dict[str, Any] = {
     "candidate": {
         "full_name": "Mohammad Mahdi",
+        "gender": "male",
         "age": 20,
         "birth_year": 2006,
     },
@@ -1530,11 +1531,30 @@ class ZeroCostGatekeeper:
 class TriJurisdictionEligibilityEngine:
     """Evaluates candidate eligibility across Syria (SY), Malaysia UTM Student Pass (MY), and Kuwait Residency (KW)."""
 
+    FEMALE_ONLY_PATTERNS = [
+        r"\bwomen\s+only\b",
+        r"\bfemale\s+only\b",
+        r"\bwomen\s+in\s+stem\b",
+        r"\bpioneering\s+women\b",
+        r"\bfemale\s+(citizens?|applicants?|students?|candidates?|leaders?)\b",
+        r"\bfor\s+(women|females|girls)\b",
+        r"\bopen\s+to\s+(women|females|girls)\s+only\b",
+        r"\bexclusively\s+for\s+women\b",
+        r"\bwomen\s+scholars?\b",
+        r"\bwomen\s+fellowship\b",
+        r"\bwomen'?s?\s+leadership\b",
+    ]
+
     INELIGIBLE_DEGREE_PATTERNS = [
         r"strictly\s+restricted\s+to\s+phd",
         r"undergraduate\s+students\s+are\s+not\s+eligible",
         r"must\s+hold\s+a\s+doctorate",
         r"phd\s+candidates\s+and\s+postdoctoral\s+researchers\s+only",
+        r"must\s+hold\s+a\s+(bachelor'?s?|undergraduate)\s+degree",
+        r"applicants\s+must\s+have\s+completed\s+their\s+bachelor",
+        r"must\s+already\s+have\s+a\s+bachelor",
+        r"for\s+master'?s?\s+studies\b",
+        r"master'?s?\s+degree\s+scholarship",
     ]
 
     def __init__(self, profile: Dict[str, Any] | None = None) -> None:
@@ -1545,13 +1565,41 @@ class TriJurisdictionEligibilityEngine:
         is_inside_my = bool(opp.get("is_inside_malaysia", 0))
         track = opp.get("track_category", "")
 
+        # 1. Gender restriction check (Candidate Mohammad Mahdi is male)
+        candidate_gender = self.profile.get("candidate", {}).get("gender", "male")
+        if candidate_gender == "male":
+            for pattern in self.FEMALE_ONLY_PATTERNS:
+                if re.search(pattern, text):
+                    return EligibilityAuditResult(
+                        is_eligible=False,
+                        matched_jurisdiction_track="",
+                        match_score=0,
+                        rejection_reason="الفرصة مخصصة للإناث فقط (Women / Female Only) ولا تطابق الملف الشخصي للمتقدم (ذكر).",
+                    )
+
+        # 2. Academic degree level check (Candidate is currently 1st-year Bachelor student at UTM)
+        is_undergrad_friendly = any(
+            re.search(pat, text)
+            for pat in [
+                r"\bopen\s+to\s+undergraduates?\b",
+                r"\bundergraduate\s+students?\s+(are\s+)?(eligible|welcome)\b",
+                r"\bfor\s+undergraduate\s+students?\b",
+                r"\bcurrent\s+undergraduates?\b",
+                r"\bcurrently\s+enrolled\s+in\s+(a\s+)?(bachelor|undergraduate)\b",
+                r"\bsummer\s+(internship|research)\b",
+                r"\bculture\s+camp\b",
+            ]
+        )
         for pattern in self.INELIGIBLE_DEGREE_PATTERNS:
             if re.search(pattern, text):
+                if is_undergrad_friendly and ("master" in pattern or "bachelor" in pattern):
+                    # If it's a fellowship/internship explicitly welcoming undergraduates too, skip
+                    continue
                 return EligibilityAuditResult(
                     is_eligible=False,
                     matched_jurisdiction_track="",
                     match_score=0,
-                    rejection_reason="الفرصة مخصصة لطلبة الدكتوراه أو ما بعد الدكتوراه فقط ولا تقبل طلبة البكالوريوس.",
+                    rejection_reason="الفرصة تتطلب شهادة دراسات عليا (ماجستير/دكتوراه) أو بكالوريوس مكتمل مسبقاً، بينما المتقدم طالب بكالوريوس سنة أولى.",
                 )
 
         matched_tracks: List[str] = []
