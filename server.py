@@ -383,7 +383,9 @@ class ZCOEngineController:
         from typst_agentic_cv_engine import synthesize_base_reference_typst_cv
         return synthesize_base_reference_typst_cv(force_recompile=force)
 
-    def approve_and_submit_opportunity(self, opportunity_code: str) -> Dict[str, Any]:
+    def approve_and_submit_opportunity(
+        self, opportunity_code: str, force_resubmit: bool = False
+    ) -> Dict[str, Any]:
         opp = self.db.get_opportunity_by_code(opportunity_code)
         if not opp:
             return {"status": "error", "message": f"Opportunity '{opportunity_code}' not found."}
@@ -403,7 +405,9 @@ class ZCOEngineController:
                 }
             self.vault.set_known_field("cv_pdf_path", cv_res["pdf_path"])
             cv_info = cv_res
-        app_res = self.applicant.attempt_auto_application(opp, allow_submit=True)
+        app_res = self.applicant.attempt_auto_application(
+            opp, allow_submit=True, force_resubmit=force_resubmit
+        )
         return {
             "status": app_res.get("application_status", "unknown"),
             "opportunity_code": opportunity_code,
@@ -499,13 +503,18 @@ def create_mcp_app(controller: ZCOEngineController) -> Any:
             return controller.synthesize_base_reference_cv(force=force)
 
         @mcp.tool()
-        def approve_and_submit_opportunity(opportunity_code: str) -> Dict[str, Any]:
+        def approve_and_submit_opportunity(
+            opportunity_code: str, force_resubmit: bool = False
+        ) -> Dict[str, Any]:
             """
-            Approves and autonomously submits the application for an opportunity.
+            Approves and submits the application for an opportunity.
             If a CV is required, automatically synthesizes a tailored Typst CV first,
             injects it into the vault, applies, and returns the submission receipt.
+            Already-submitted opportunities are blocked unless ``force_resubmit`` is true.
             """
-            return controller.approve_and_submit_opportunity(opportunity_code)
+            return controller.approve_and_submit_opportunity(
+                opportunity_code, force_resubmit=force_resubmit
+            )
 
         @mcp.tool()
         def inspect_vault_profile() -> Dict[str, Any]:

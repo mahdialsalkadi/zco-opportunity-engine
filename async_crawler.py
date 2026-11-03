@@ -749,6 +749,7 @@ class AsyncOpportunityCrawler:
 
             # Assign true host institution / university instead of aggregator name
             clean_host_organizer = infer_clean_organizer(title, desc)
+            deadline_iso = extract_deadline_iso(f"{title} {desc}")
 
             records.append(
                 RawOpportunityRecord(
@@ -762,8 +763,14 @@ class AsyncOpportunityCrawler:
                     track_category=track,
                     raw_description=desc[:2000],
                     raw_terms_text=desc[:4000],
-                    deadline_iso=extract_deadline_iso(f"{title} {desc}"),
+                    deadline_iso=deadline_iso,
                     source_feed_id=source_cfg["feed_id"],
+                    source_type="rss",
+                    deadline_confidence=0.7 if deadline_iso else 0.0,
+                    provenance={
+                        "extraction": "rss_regex",
+                        "feed_url": source_cfg.get("rss_url", ""),
+                    },
                 )
             )
         return records
@@ -786,6 +793,14 @@ class AsyncOpportunityCrawler:
 
         if include_curated_seed:
             for rec in get_curated_seed_batch(BASE_DIR):
+                if not rec.source_type:
+                    rec.source_type = (
+                        "local_testbed"
+                        if rec.source_feed_id == "local_testbed_portal"
+                        else "curated_seed"
+                    )
+                if rec.deadline_confidence is None:
+                    rec.deadline_confidence = 0.3
                 inserted_id = self.db.ingest_raw_opportunity(rec)
                 if inserted_id is not None:
                     new_items += 1

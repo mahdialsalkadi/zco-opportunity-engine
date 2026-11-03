@@ -192,6 +192,16 @@ def format_opportunity_card(opp: Dict[str, Any]) -> Tuple[str, InlineKeyboardMar
 
     cov = json.loads(opp.get("financial_coverage_json") or "{}")
     cov_ar = _esc(cov.get("coverage_summary_ar", "تغطية كاملة 100% (0 رسوم + سكن + وجبات + مواصلات/طيران)"))
+    source_confidence = opp.get("source_confidence", 0)
+    try:
+        source_confidence_pct = max(0, min(100, round(float(source_confidence) * 100)))
+    except (TypeError, ValueError):
+        source_confidence_pct = 0
+    deadline_confidence = opp.get("deadline_confidence", 0)
+    try:
+        deadline_confidence_pct = max(0, min(100, round(float(deadline_confidence) * 100)))
+    except (TypeError, ValueError):
+        deadline_confidence_pct = 0
 
     status_badge = "مؤهل وجاهز للتقديم"
     if status == OpportunityStatus.APPLIED_AUTOMATICALLY:
@@ -234,7 +244,8 @@ def format_opportunity_card(opp: Dict[str, Any]) -> Tuple[str, InlineKeyboardMar
         f"📍 <b>الموقع:</b> {city} | {location_badge}\n"
         f"🎁 <b>التغطية المالية:</b> {cov_ar}\n"
         f"🎯 <b>نسبة التطابق:</b> <b>{score}%</b>\n"
-        f"📅 <b>آخر موعد:</b> <code>{deadline}</code>\n"
+        f"📅 <b>آخر موعد:</b> <code>{deadline}</code> (ثقة {deadline_confidence_pct}%)\n"
+        f"🔎 <b>موثوقية المصدر:</b> <b>{source_confidence_pct}%</b>\n"
         f"📊 <b>الحالة:</b> {status_badge}\n"
         f"{cv_req_badge}\n\n"
         f"💡 <b>شرح مبسط عن الفرصة:</b>\n"

@@ -21,8 +21,11 @@ import json
 import pathlib
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional
+
+
+SCHEMA_VERSION = 3
 
 
 class OpportunityStatus:
@@ -56,6 +59,10 @@ class RawOpportunityRecord:
     deadline_iso: str
     source_feed_id: str
     required_form_fields: Optional[List[str]] = None
+    source_type: str = ""
+    source_confidence: Optional[float] = None
+    deadline_confidence: Optional[float] = None
+    provenance: Dict[str, Any] = field(default_factory=dict)
 
 
 class OpportunityDatabase:
@@ -205,6 +212,163 @@ class OpportunityDatabase:
                 );
                 """
             )
+            self._apply_migrations(conn)
+
+    @staticmethod
+    def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+        return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+    def _apply_migrations(self, conn: sqlite3.Connection) -> None:
+        """Apply additive schema migrations without losing existing data."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        applied = {
+            row["version"] for row in conn.execute("SELECT version FROM schema_migrations")
+        }
+
+        if 1 not in applied:
+            columns = self._table_columns(conn, "opportunities")
+            additions = {
+                "source_type": "TEXT NOT NULL DEFAULT 'unknown'",
+                "source_confidence": "REAL NOT NULL DEFAULT 0.5",
+                "deadline_confidence": "REAL NOT NULL DEFAULT 0.0",
+                "provenance_json": "TEXT NOT NULL DEFAULT '{}'",
+                "last_seen_at": "TEXT",
+            }
+            for name, ddl in additions.items():
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE opportunities ADD COLUMN {name} {ddl}")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_opp_source_confidence "
+                "ON opportunities(source_confidence, deadline_confidence)"
+            )
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at, description) "
+                "VALUES (?, ?, ?)",
+                (
+                    1,
+                    dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "Add source provenance and confidence columns",
+                ),
+            )
+
+        if 2 not in applied:
+            rows = conn.execute(
+                "SELECT id, source_feed_id, source_url, apply_url, deadline_iso, "
+                "organizer, provenance_json FROM opportunities "
+                "WHERE provenance_json IS NULL OR provenance_json = '{}'"
+            ).fetchall()
+            for row in rows:
+                source_type = self._infer_source_type_values(
+                    row["source_feed_id"], row["apply_url"]
+                )
+                deadline_confidence = 0.0
+                source_confidence = self._estimate_confidence_values(
+                    source_type, row["deadline_iso"], row["organizer"]
+                )
+                provenance = {
+                    "source_feed_id": row["source_feed_id"],
+                    "source_url": row["source_url"],
+                    "apply_url": row["apply_url"],
+                    "source_type": source_type,
+                    "deadline_iso": row["deadline_iso"],
+                    "deadline_confidence": deadline_confidence,
+                    "extraction": "legacy_backfill",
+                    "deadline_source": "legacy_unknown",
+                }
+                conn.execute(
+                    "UPDATE opportunities SET source_type = ?, source_confidence = ?, "
+                    "deadline_confidence = ?, provenance_json = ?, "
+                    "last_seen_at = COALESCE(last_seen_at, ingested_at) WHERE id = ?",
+                    (
+                        source_type,
+                        source_confidence,
+                        deadline_confidence,
+                        json.dumps(provenance, ensure_ascii=False),
+                        row["id"],
+                    ),
+                )
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at, description) "
+                "VALUES (?, ?, ?)",
+                (
+                    2,
+                    dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "Backfill provenance and confidence for legacy rows",
+                ),
+            )
+
+        if 3 not in applied:
+            # Legacy scraped rows often carried an invented fallback deadline.
+            # Do not claim confidence in dates we never extracted.
+            conn.execute(
+                "UPDATE opportunities SET deadline_confidence = 0.0 "
+                "WHERE provenance_json LIKE '%legacy_backfill%'"
+            )
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at, description) "
+                "VALUES (?, ?, ?)",
+                (
+                    3,
+                    dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "Downgrade confidence for unknown legacy deadlines",
+                ),
+            )
+
+    @staticmethod
+    def _infer_source_type_values(feed_id: str, apply_url: str, explicit: str = "") -> str:
+        if explicit:
+            return explicit
+        feed = (feed_id or "").lower()
+        url = (apply_url or "").lower()
+        if "testbed" in feed or url.startswith("file://"):
+            return "local_testbed"
+        if "curated" in feed or "seed" in feed:
+            return "curated_seed"
+        if "manual" in feed:
+            return "manual"
+        return "rss"
+
+    @classmethod
+    def _infer_source_type(cls, record: RawOpportunityRecord) -> str:
+        return cls._infer_source_type_values(
+            record.source_feed_id, record.apply_url, record.source_type
+        )
+
+    @staticmethod
+    def _estimate_confidence_values(
+        source_type: str, deadline_iso: str, organizer: str
+    ) -> float:
+        base = {
+            "local_testbed": 0.05,
+            "curated_seed": 0.35,
+            "manual": 0.8,
+            "rss": 0.6,
+        }.get(source_type, 0.5)
+        if deadline_iso:
+            base += 0.1
+        organizer_norm = (organizer or "").strip().lower()
+        if organizer_norm and organizer_norm not in {
+            "unknown",
+            "n/a",
+            "various",
+            "community group",
+        }:
+            base += 0.05
+        return round(min(base, 0.95), 3)
+
+    @classmethod
+    def _estimate_source_confidence(cls, record: RawOpportunityRecord) -> float:
+        return cls._estimate_confidence_values(
+            cls._infer_source_type(record), record.deadline_iso, record.organizer
+        )
 
     @staticmethod
     def compute_fingerprint(title: str, apply_url: str, deadline_iso: str) -> str:
@@ -217,6 +381,26 @@ class OpportunityDatabase:
         )
         now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
         req_fields_json = json.dumps(record.required_form_fields or [], ensure_ascii=False)
+        source_type = self._infer_source_type(record)
+        source_confidence = (
+            record.source_confidence
+            if record.source_confidence is not None
+            else self._estimate_source_confidence(record)
+        )
+        deadline_confidence = (
+            record.deadline_confidence
+            if record.deadline_confidence is not None
+            else (0.7 if record.deadline_iso else 0.0)
+        )
+        provenance = {
+            "source_feed_id": record.source_feed_id,
+            "source_url": record.source_url,
+            "apply_url": record.apply_url,
+            "source_type": source_type,
+            "deadline_iso": record.deadline_iso,
+            "deadline_confidence": round(float(deadline_confidence), 3),
+            **record.provenance,
+        }
 
         with self.connect() as conn:
             cursor = conn.execute(
@@ -226,8 +410,9 @@ class OpportunityDatabase:
                     location_country, location_city, is_inside_malaysia,
                     track_category, raw_description, raw_terms_text,
                     deadline_iso, source_feed_id, required_form_fields_json,
-                    status, ingested_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, ingested_at, source_type, source_confidence,
+                    deadline_confidence, provenance_json, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     fingerprint,
@@ -246,9 +431,29 @@ class OpportunityDatabase:
                     req_fields_json,
                     OpportunityStatus.RAW_INGESTED,
                     now_iso,
+                    source_type,
+                    round(float(source_confidence), 3),
+                    round(float(deadline_confidence), 3),
+                    json.dumps(provenance, ensure_ascii=False),
+                    now_iso,
                 ),
             )
             if cursor.rowcount == 0:
+                # Refresh provenance for an opportunity we have seen before.
+                conn.execute(
+                    "UPDATE opportunities SET last_seen_at = ?, "
+                    "provenance_json = CASE WHEN source_confidence <= ? THEN ? "
+                    "ELSE provenance_json END, "
+                    "source_confidence = MAX(source_confidence, ?) "
+                    "WHERE fingerprint_sha256 = ?",
+                    (
+                        now_iso,
+                        round(float(source_confidence), 3),
+                        json.dumps(provenance, ensure_ascii=False),
+                        round(float(source_confidence), 3),
+                        fingerprint,
+                    ),
+                )
                 return None
             row_id = cursor.lastrowid
             prefix = "MY" if record.is_inside_malaysia else "INT"

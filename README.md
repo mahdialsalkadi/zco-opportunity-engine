@@ -5,7 +5,7 @@
 [![Typst](https://img.shields.io/badge/typesetting-Typst%200.12+-239dad.svg)](https://typst.app/)
 [![Protocol](https://img.shields.io/badge/MCP-FastMCP-purple.svg)](https://modelcontextprotocol.io/)
 [![Database](https://img.shields.io/badge/database-SQLite%20WAL-lightgrey.svg)](https://www.sqlite.org/)
-[![Tests](https://img.shields.io/badge/tests-35%2F35%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-43%2F43%20passed-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An enterprise-grade, autonomous opportunity auditing, memory-learning, and programmatic application system engineered specifically for **Mohammad Mahdi Alsalkadi** (Syrian national, 1st-year Artificial Intelligence undergraduate at Universiti Teknologi Malaysia with honours, CGPA 3.53, Kuwait residency).
@@ -135,7 +135,7 @@ cp .env.example .env
 #   (chmod 600), or set it explicitly for remote access.
 # - Keep ZCO_AUTO_SUBMIT=0 unless you explicitly want unattended Submit clicks.
 
-# 4. Run the full automated test suite (35 unit & integration tests)
+# 4. Run the full automated test suite (43 unit & integration tests)
 pytest tests/ -v
 
 # 5. Verify Master Reference Typst CV synthesis (Strictly 1 Page, 0 Matric, 0 GitHub)
@@ -149,6 +149,9 @@ python3 server.py --profile
 
 # 8. Inspect Process Supervisor & active services
 python3 supervisor.py --status
+
+# 9. Optional: foreground health monitor with restart backoff and log rotation
+python3 supervisor.py --monitor --interval-seconds 30
 ```
 
 ---
@@ -160,6 +163,14 @@ python3 supervisor.py --status
 * **Honest application states:** only a real confirmation reference produces `APPLIED_AUTOMATICALLY`. A clicked-but-unconfirmed submit becomes `SUBMITTED_UNCONFIRMED`; drafts become `READY_FOR_REVIEW`; failures become `APPLICATION_FAILED`. Legacy synthetic `SUB-...` / `DOM-SUB-...` receipts can be downgraded with `python scripts/quarantine_unverified_submissions.py --apply`.
 * **Telegram admin allow-list:** every command and callback is denied unless the chat ID is listed in `TELEGRAM_ADMIN_CHAT_IDS`. Scraped text is HTML-escaped before rendering, and bot tokens are redacted from logs.
 * **Private files stay private:** `config/candidate_profile.json`, `config/master_profile.yaml`, `config/comprehensive_portfolio.json`, generated CVs, screenshots, dashboards, and the SQLite database are ignored by git. Demo/testbed seeds are opt-in via `async_crawler.py --seed-demo`.
+
+### Reliability Hardening (Phase 1)
+
+* **Versioned SQLite migrations:** `schema_migrations` and additive `ALTER TABLE` migrations upgrade existing databases without deleting rows. Legacy receipt/deadline backfills are explicit migration versions.
+* **Source provenance & confidence:** every opportunity stores `source_type`, `source_confidence`, `deadline_confidence`, and `provenance_json`. Local testbeds score near zero, legacy invented deadlines score zero, and the dashboard/Telegram cards show the confidence so a human can verify before applying.
+* **Duplicate-submission guard:** already applied or unconfirmed opportunities are not submitted again unless `force_resubmit=true` is passed deliberately.
+* **Supervisor hardening:** `supervisor.py --monitor` restarts dead services with capped exponential backoff, tracks restart counts, and rotates logs (`ZCO_LOG_MAX_BYTES`, `ZCO_LOG_BACKUPS`, `ZCO_MAX_RESTARTS`).
+* **CI hardening:** the workflow has read-only permissions, concurrency cancellation, a timeout, `compileall`, `pip check`, and a private-data/secret scan over tracked files.
 
 ---
 
@@ -186,11 +197,14 @@ python3 supervisor.py --status
 │   ├── logs/                         # Service execution logs
 │   └── opportunities.db              # SQLite WAL database
 ├── scripts/
+│   ├── check_no_private_data.py              # CI guard against tracked PII/secrets
 │   └── quarantine_unverified_submissions.py  # Dry-run/apply receipt quarantine
 ├── templates/
 │   └── cv_template.typ               # Parametric Typst CV template
 ├── tests/
+│   ├── test_phase1_reliability.py    # Migrations, provenance, confidence, private-data check
 │   ├── test_security_phase0.py       # Auth, escaping, receipt honesty regression tests
+│   ├── test_supervisor.py            # Log rotation & restart backoff
 │   ├── test_telegram_bot.py          # Bot interactions & card rendering
 │   ├── test_typst_cv_engine.py       # Typst synthesis, 1-page enforcement, sanitization
 │   ├── test_v42_features.py          # Two-hop resolver, Google Forms ARIA, Reply-to-Learn, QA bank

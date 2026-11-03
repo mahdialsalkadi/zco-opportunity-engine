@@ -1511,6 +1511,7 @@ class AutonomousApplicantEngine:
         self,
         opp: Dict[str, Any],
         allow_submit: bool = False,
+        force_resubmit: bool = False,
     ) -> Dict[str, Any]:
         """Prepare (and optionally submit) one application.
 
@@ -1518,10 +1519,37 @@ class AutonomousApplicantEngine:
         the opportunity is only marked ``APPLIED_AUTOMATICALLY`` when the browser
         captured a real confirmation reference. A clicked-but-unconfirmed submit
         is recorded as ``SUBMITTED_UNCONFIRMED`` and never reported as success.
+
+        ``force_resubmit`` is intentionally explicit: already-submitted
+        opportunities are not submitted twice by accident.
         """
         opp_id = opp["id"]
         opp_code = opp.get("opportunity_code") or f"ID-{opp_id}"
         apply_url = opp.get("apply_url", "")
+
+        if (
+            allow_submit
+            and not force_resubmit
+            and opp.get("status")
+            in (
+                OpportunityStatus.APPLIED_AUTOMATICALLY,
+                OpportunityStatus.SUBMITTED_UNCONFIRMED,
+            )
+        ):
+            try:
+                receipt = json.loads(opp.get("submission_receipt_json") or "{}")
+            except (TypeError, ValueError):
+                receipt = {}
+            notes = "تم تسجيل هذه الفرصة مسبقاً؛ تم منع إعادة الإرسال لتجنب طلب مكرر."
+            return {
+                "opportunity_code": opp_code,
+                "title": opp.get("title", ""),
+                "application_status": opp.get("status"),
+                "filled_fields_count": 0,
+                "missing_fields": [],
+                "confirmation_ref": receipt.get("confirmation_ref", ""),
+                "notes": notes,
+            }
 
         if apply_url.startswith("file://"):
             try:

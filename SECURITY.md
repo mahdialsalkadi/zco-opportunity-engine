@@ -49,3 +49,11 @@ Legacy synthetic receipts (including local testbed fixtures) can be reviewed and
 python scripts/quarantine_unverified_submissions.py          # dry run
 python scripts/quarantine_unverified_submissions.py --apply  # mutate database
 ```
+
+## Data Provenance
+
+Each opportunity stores `source_type`, `source_confidence`, `deadline_confidence`, and
+`provenance_json`. Local testbed fixtures and legacy rows with unknown deadlines are
+scored low on purpose. The dashboard and Telegram cards show these scores so a human
+can verify the source before applying. Schema upgrades are versioned in
+`schema_migrations` and are additive.

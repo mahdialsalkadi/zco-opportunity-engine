@@ -9,9 +9,10 @@ Controls and monitors all 24/7 background components:
 
 Commands:
   python3 supervisor.py --start       # Starts all daemons in the background
-  python3 supervisor.py --status      # Checks health, PIDs, and uptime of all services
+  python3 supervisor.py --status      # Checks health, PIDs, restart counts, and uptime
   python3 supervisor.py --stop        # Gracefully stops all daemons
   python3 supervisor.py --restart     # Restarts all daemons
+  python3 supervisor.py --monitor     # Foreground health loop with restart backoff & log rotation
 """
 
 from __future__ import annotations
@@ -36,6 +37,9 @@ BASE_DIR = pathlib.Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "data" / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 PID_FILE = BASE_DIR / "data" / "supervisor_state.json"
+MAX_LOG_BYTES = int(os.environ.get("ZCO_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
+LOG_BACKUPS = int(os.environ.get("ZCO_LOG_BACKUPS", "3"))
+MAX_RESTARTS = int(os.environ.get("ZCO_MAX_RESTARTS", "5"))
 
 # Load environment configuration
 def _load_local_env() -> None:
@@ -107,8 +111,26 @@ def is_pid_running(pid: int) -> bool:
         return False
 
 
+def rotate_log(log_path: pathlib.Path, max_bytes: int = MAX_LOG_BYTES) -> bool:
+    """Rotate a log file once it exceeds ``max_bytes``, keeping ``LOG_BACKUPS`` files."""
+    try:
+        if not log_path.exists() or log_path.stat().st_size < max_bytes:
+            return False
+        for index in range(LOG_BACKUPS - 1, 0, -1):
+            src = pathlib.Path(f"{log_path}.{index}")
+            dst = pathlib.Path(f"{log_path}.{index + 1}")
+            if src.exists():
+                os.replace(src, dst)
+        os.replace(log_path, pathlib.Path(f"{log_path}.1"))
+        return True
+    except OSError as exc:
+        print(f"[log-rotation] failed for {log_path}: {exc}", file=sys.stderr)
+        return False
+
+
 def start_service(svc_key: str, svc_info: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
-    current_pid = state.get("services", {}).get(svc_key, {}).get("pid")
+    previous_state = state.get("services", {}).get(svc_key, {})
+    current_pid = previous_state.get("pid")
     if current_pid and is_pid_running(current_pid):
         return {
             "status": "already_running",
@@ -117,6 +139,7 @@ def start_service(svc_key: str, svc_info: Dict[str, Any], state: Dict[str, Any])
         }
 
     log_path = svc_info["log_file"]
+    rotate_log(log_path)
     log_fd = open(log_path, "a", encoding="utf-8")
 
     env_vars = {**os.environ, "PYTHONUNBUFFERED": "1"}
@@ -130,11 +153,17 @@ def start_service(svc_key: str, svc_info: Dict[str, Any], state: Dict[str, Any])
         start_new_session=True,
     )
 
+    restart_count = int(previous_state.get("restart_count", 0))
+    if previous_state.get("pid"):
+        restart_count += 1
     svc_state = {
         "pid": proc.pid,
         "name": svc_info["name"],
         "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "log_file": str(log_path),
+        "restart_count": restart_count,
+        "consecutive_failures": 0,
+        "next_retry_at": None,
     }
     state.setdefault("services", {})[svc_key] = svc_state
     save_state(state)
@@ -165,6 +194,74 @@ def stop_service(svc_key: str, state: Dict[str, Any]) -> Dict[str, Any]:
     return {"status": "stopped", "pid": pid}
 
 
+def monitor_once(
+    state: Dict[str, Any],
+    interval_seconds: float = 30.0,
+    max_restarts: int = MAX_RESTARTS,
+) -> Dict[str, str]:
+    """Check all services once and restart dead ones with capped backoff."""
+    now = dt.datetime.now(dt.timezone.utc)
+    actions: Dict[str, str] = {}
+    for key, info in SERVICES.items():
+        svc_data = state.setdefault("services", {}).setdefault(key, {})
+        pid = svc_data.get("pid")
+        if pid and is_pid_running(pid):
+            svc_data["consecutive_failures"] = 0
+            svc_data["next_retry_at"] = None
+            actions[key] = "running"
+            continue
+
+        failures = int(svc_data.get("consecutive_failures", 0))
+        next_retry_raw = svc_data.get("next_retry_at")
+        if next_retry_raw:
+            try:
+                next_retry = dt.datetime.fromisoformat(next_retry_raw)
+                if now < next_retry:
+                    actions[key] = "backoff"
+                    continue
+            except (TypeError, ValueError):
+                pass
+
+        if failures >= max_restarts:
+            actions[key] = "gave_up"
+            continue
+
+        res = start_service(key, info, state)
+        svc_data = state["services"][key]
+        svc_data["consecutive_failures"] = failures + 1
+        svc_data["last_restart_at"] = now.isoformat()
+        backoff_seconds = min(300.0, max(interval_seconds, interval_seconds * (2 ** min(failures, 4))))
+        svc_data["next_retry_at"] = (
+            now + dt.timedelta(seconds=backoff_seconds)
+        ).isoformat()
+        actions[key] = res["status"]
+    save_state(state)
+    return actions
+
+
+def monitor_services(
+    interval_seconds: float = 30.0,
+    max_restarts: int = MAX_RESTARTS,
+) -> None:
+    print(
+        f"[supervisor] monitoring every {interval_seconds:.0f}s "
+        f"(max consecutive restarts: {max_restarts})",
+        flush=True,
+    )
+    state = load_state()
+    try:
+        while True:
+            actions = monitor_once(state, interval_seconds=interval_seconds, max_restarts=max_restarts)
+            if any(action not in ("running", "backoff") for action in actions.values()):
+                print(
+                    f"[{dt.datetime.now(dt.timezone.utc).isoformat()}] {json.dumps(actions)}",
+                    flush=True,
+                )
+            time.sleep(interval_seconds)
+    except KeyboardInterrupt:
+        print("[supervisor] monitor stopped", flush=True)
+
+
 def get_all_status() -> Dict[str, Any]:
     state = load_state()
     statuses: Dict[str, Any] = {}
@@ -177,6 +274,9 @@ def get_all_status() -> Dict[str, Any]:
             "running": running,
             "pid": pid if running else None,
             "started_at": svc_data.get("started_at") if running else None,
+            "restart_count": int(svc_data.get("restart_count", 0)),
+            "consecutive_failures": int(svc_data.get("consecutive_failures", 0)),
+            "next_retry_at": svc_data.get("next_retry_at"),
             "log_file": str(info["log_file"]),
         }
     return {
@@ -191,7 +291,22 @@ def main() -> None:
     parser.add_argument("--stop", action="store_true", help="Stop all daemons")
     parser.add_argument("--restart", action="store_true", help="Restart all daemons")
     parser.add_argument("--status", action="store_true", help="Check status of all daemons")
+    parser.add_argument("--monitor", action="store_true", help="Run a foreground health-monitor loop")
+    parser.add_argument("--interval-seconds", type=float, default=30.0, help="Monitor check interval")
+    parser.add_argument(
+        "--max-restarts",
+        type=int,
+        default=MAX_RESTARTS,
+        help="Maximum consecutive restarts before a service is marked gave_up",
+    )
     args = parser.parse_args()
+
+    if args.monitor:
+        monitor_services(
+            interval_seconds=max(5.0, args.interval_seconds),
+            max_restarts=max(1, args.max_restarts),
+        )
+        return
 
     state = load_state()
 

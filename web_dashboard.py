@@ -318,6 +318,9 @@ async def get_opportunities(
             "status": status,
             "deadline_iso": deadline,
             "apply_url": apply_url,
+            "source_type": o.get("source_type", "unknown"),
+            "source_confidence": o.get("source_confidence", 0),
+            "deadline_confidence": o.get("deadline_confidence", 0),
             "financial_coverage_ar": cov_summary,
             "explanation_ar": explanation_ar,
             "cv_required": cv_req,
@@ -952,6 +955,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             const coverage = escHtml(opp.financial_coverage_ar);
             const explanation = escHtml(opp.explanation_ar);
             const matchScore = Number.isFinite(Number(opp.match_score)) ? Number(opp.match_score) : 0;
+            const sourceConfidence = Math.max(0, Math.min(100, Math.round(Number(opp.source_confidence || 0) * 100)));
+            const deadlineConfidence = Math.max(0, Math.min(100, Math.round(Number(opp.deadline_confidence || 0) * 100)));
+            const sourceType = escHtml(opp.source_type || 'unknown');
             const applyUrl = safeHttpUrl(opp.apply_url);
             const isMY = opp.is_inside_malaysia;
             const locationBadge = isMY
@@ -999,6 +1005,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         <span><i class="fa-solid fa-location-dot text-gray-500 ml-1"></i>${city ? city + '، ' : ''}${country}</span>
                         ${locationBadge}
                         ${cvBadge}
+                    </div>
+
+                    <div class="flex flex-wrap items-center gap-2 text-[11px] text-gray-500 mb-3">
+                        <span><i class="fa-solid fa-link text-gray-600 ml-1"></i>المصدر: ${sourceType}</span>
+                        <span>ثقة المصدر: ${sourceConfidence}%</span>
+                        <span>ثقة الموعد: ${deadlineConfidence}%</span>
+                        ${sourceConfidence < 50 ? '<span class="text-amber-400 font-semibold">⚠️ تحقق يدوياً قبل التقديم</span>' : ''}
                     </div>
 
                     <!-- Financial Coverage Pill -->

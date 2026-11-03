@@ -6,10 +6,18 @@ on:
   pull_request:
     branches: [ master, main ]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Run Automated Test Suite
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout Repository
@@ -36,6 +44,18 @@ jobs:
         run: |
           cp .env.example .env
           mkdir -p data/logs data/documents data/dashboards
+
+      - name: Check for Tracked Private Data
+        run: |
+          python scripts/check_no_private_data.py
+
+      - name: Compile Python Modules
+        run: |
+          python -m compileall -q async_crawler.py database.py engines_and_auditor.py install_zco_plugin.py portfolio_and_docs_engine.py server.py supervisor.py telegram_bot.py typst_agentic_cv_engine.py web_dashboard.py scripts
+
+      - name: Verify Dependency Consistency
+        run: |
+          python -m pip check
 
       - name: Run Pytest Suite
         run: |

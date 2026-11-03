@@ -187,6 +187,24 @@ def test_confirmed_receipt_is_kept(tmp_path):
     assert result["confirmation_ref"] == "REF-REAL-2027-0001"
 
 
+def test_duplicate_submission_is_blocked(tmp_path):
+    db = OpportunityDatabase(tmp_path / "duplicate.db")
+    vault = CandidateMemoryVault(db)
+    applicant = AutonomousApplicantEngine(db, vault)
+    filler = _FakeFiller(_receipt("APPLIED_AUTOMATICALLY", "REF-ONCE-0001"))
+    applicant.browser_filler = filler
+    opp = _ingest_opp(db, required_form_fields_json='["full_name"]')
+    applicant.attempt_auto_application(opp, allow_submit=True)
+    assert filler.calls == 1
+
+    refreshed = db.get_opportunity_by_code(opp["opportunity_code"])
+    duplicate = applicant.attempt_auto_application(refreshed, allow_submit=True)
+
+    assert duplicate["application_status"] == OpportunityStatus.APPLIED_AUTOMATICALLY
+    assert filler.calls == 1
+    assert "مسبق" in duplicate["notes"]
+
+
 def test_cv_failure_blocks_submission(tmp_path, monkeypatch):
     db = OpportunityDatabase(tmp_path / "cv_fail.db")
     vault = CandidateMemoryVault(db)
