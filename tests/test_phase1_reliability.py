@@ -31,6 +31,8 @@ def _record(**overrides) -> RawOpportunityRecord:
         source_feed_id="rss_nature",
         source_type="rss",
         deadline_confidence=0.7,
+        program_start_iso="2027-06-01",
+        program_end_iso="2027-08-31",
     )
     values.update(overrides)
     return RawOpportunityRecord(**values)
@@ -72,19 +74,26 @@ def test_schema_migration_is_additive_and_idempotent(tmp_path):
             row["name"]
             for row in conn.execute("PRAGMA table_info(opportunities)")
         }
-    assert {"source_type", "source_confidence", "deadline_confidence", "provenance_json"} <= columns
+    assert {
+        "source_type",
+        "source_confidence",
+        "deadline_confidence",
+        "provenance_json",
+        "program_start_iso",
+        "program_end_iso",
+    } <= columns
 
     with db.connect() as conn:
         versions = [
             row["version"]
             for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")
         ]
-    assert versions == [1, 2, 3]
+    assert versions == [1, 2, 3, 4]
 
     # Re-opening must not re-apply or fail.
     OpportunityDatabase(db_path)
     with db.connect() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
+        assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 4
 
 
 def test_ingest_records_provenance_and_dedupes(tmp_path):
@@ -96,11 +105,15 @@ def test_ingest_records_provenance_and_dedupes(tmp_path):
     assert row["source_type"] == "rss"
     assert 0.5 <= row["source_confidence"] <= 1.0
     assert row["deadline_confidence"] == 0.7
+    assert row["program_start_iso"] == "2027-06-01"
+    assert row["program_end_iso"] == "2027-08-31"
     assert row["last_seen_at"]
 
     provenance = json.loads(row["provenance_json"])
     assert provenance["source_feed_id"] == "rss_nature"
     assert provenance["deadline_confidence"] == 0.7
+    assert provenance["program_start_iso"] == "2027-06-01"
+    assert provenance["program_end_iso"] == "2027-08-31"
 
     # Same fingerprint is idempotent; it refreshes last_seen_at instead of duplicating.
     assert db.ingest_raw_opportunity(record) is None

@@ -301,7 +301,7 @@ class ZCOEngineController:
             out.append("")
             if is_domestic:
                 out.append(
-                    "| الكود | اسم الفرصة والجهة المنظمة | المدينة | التغطية الشاملة (0 رسوم) | حالة التقديم التلقائي ورقم الإيصال | آخر موعد | التطابق |"
+                    "| الكود | اسم الفرصة والجهة المنظمة | المدينة | التغطية الشاملة (0 رسوم) | حالة التقديم التلقائي ورقم الإيصال | الجدول الزمني (تسجيل / رحلة) | التطابق |"
                 )
                 out.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
                 for item in track_items:
@@ -311,11 +311,11 @@ class ZCOEngineController:
                     disp_url = self._clean_display_url(item)
                     title_link = f"[{item['title']}]({disp_url}) — *{item['organizer']}*"
                     out.append(
-                        f"| `{item['opportunity_code']}` | {title_link} | {item['location_city']} | {cov_text} | {status_str} | `{item['deadline_iso']}` | **{item['match_score']}%** |"
+                        f"| `{item['opportunity_code']}` | {title_link} | {item['location_city']} | {cov_text} | {status_str} | {self._format_timeline_cell(item)} | **{item['match_score']}%** |"
                     )
             else:
                 out.append(
-                    "| الكود | اسم الفرصة والدولة | التغطية الشاملة (من KUL) | مسار الأهلية والفيزا | حالة التقديم التلقائي ورقم الإيصال | آخر موعد | التطابق |"
+                    "| الكود | اسم الفرصة والدولة | التغطية الشاملة (من KUL) | مسار الأهلية والفيزا | حالة التقديم التلقائي ورقم الإيصال | الجدول الزمني (تسجيل / رحلة) | التطابق |"
                 )
                 out.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
                 for item in track_items:
@@ -326,10 +326,17 @@ class ZCOEngineController:
                     disp_url = self._clean_display_url(item)
                     title_link = f"[{item['title']}]({disp_url}) — **{item['location_country']}** ({item['location_city']})"
                     out.append(
-                        f"| `{item['opportunity_code']}` | {title_link} | {cov_text} | {elig_visa} | {status_str} | `{item['deadline_iso']}` | **{item['match_score']}%** |"
+                        f"| `{item['opportunity_code']}` | {title_link} | {cov_text} | {elig_visa} | {status_str} | {self._format_timeline_cell(item)} | **{item['match_score']}%** |"
                     )
             out.append("")
         return out
+
+    @staticmethod
+    def _format_timeline_cell(item: Dict[str, Any]) -> str:
+        deadline = item.get("deadline_iso") or "غير محدد"
+        start = item.get("program_start_iso") or "غير محدد"
+        end = item.get("program_end_iso") or "غير محدد"
+        return f"تسجيل: `{deadline}`<br>رحلة: `{start}` → `{end}`"
 
     @staticmethod
     def _format_application_status_cell(item: Dict[str, Any]) -> str:
@@ -380,6 +387,21 @@ class ZCOEngineController:
             return {"status": "error", "message": f"Opportunity '{opportunity_code}' not found."}
         from typst_agentic_cv_engine import synthesize_tailored_typst_cv
         return synthesize_tailored_typst_cv(opp, force=force)
+
+    def run_application_preflight(self, opportunity_code: str) -> Dict[str, Any]:
+        """Read-only check that the saved apply URL is a fillable form."""
+        from engines_and_auditor import preflight_application
+
+        opp = self.db.get_opportunity_by_code(opportunity_code)
+        if not opp:
+            return {"status": "error", "message": f"Opportunity '{opportunity_code}' not found."}
+        result = preflight_application(opp)
+        return {
+            "status": "ok" if result.ok else "blocked",
+            "opportunity_code": opp["opportunity_code"],
+            "title": opp.get("title", ""),
+            **result.summary(),
+        }
 
     def synthesize_base_reference_cv(self, force: bool = False) -> Dict[str, Any]:
         from typst_agentic_cv_engine import synthesize_base_reference_typst_cv
@@ -497,6 +519,11 @@ def create_mcp_app(controller: ZCOEngineController) -> Any:
             return controller.synthesize_tailored_cv(opportunity_code, force=force)
 
         @mcp.tool()
+        def preflight_application_url(opportunity_code: str) -> Dict[str, Any]:
+            """Opens the saved apply URL read-only and verifies it contains a fillable form."""
+            return controller.run_application_preflight(opportunity_code)
+
+        @mcp.tool()
         def synthesize_base_reference_cv(force: bool = False) -> Dict[str, Any]:
             """
             Synthesizes or returns the Master Reference 1-page ATS Typst CV for Mohammad Mahdi,
@@ -583,6 +610,12 @@ def main() -> None:
         help="Synthesize vacancy-adapted 1-page Typst CV for an opportunity code",
     )
     parser.add_argument(
+        "--preflight",
+        type=str,
+        default="",
+        help="Check that an opportunity's apply URL is a real fillable form (no submission)",
+    )
+    parser.add_argument(
         "--base-cv",
         action="store_true",
         help="Synthesize and verify the Master Reference 1-page Typst CV",
@@ -662,6 +695,10 @@ def main() -> None:
 
     if args.synthesize_cv:
         print(json.dumps(controller.synthesize_tailored_cv(args.synthesize_cv, force=True), indent=2, ensure_ascii=False))
+        return
+
+    if args.preflight:
+        print(json.dumps(controller.run_application_preflight(args.preflight), indent=2, ensure_ascii=False))
         return
 
     if args.approve:

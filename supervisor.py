@@ -88,6 +88,22 @@ SERVICES: Dict[str, Dict[str, Any]] = {
     },
 }
 
+import shutil
+
+if shutil.which("obscura"):
+    SERVICES["obscura"] = {
+        "name": "Obscura Headless Browser CDP Server (:9222)",
+        "command": [
+            shutil.which("obscura") or "obscura",
+            "serve",
+            "--port",
+            "9222",
+            "--stealth",
+            "--allow-private-network",
+        ],
+        "log_file": LOG_DIR / "obscura_cdp.log",
+    }
+
 
 def load_state() -> Dict[str, Any]:
     if PID_FILE.exists():

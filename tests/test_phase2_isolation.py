@@ -56,6 +56,9 @@ def test_normalize_profile_updates_validates_and_preserves_clears():
             "github_url": "https://github.com/example",
             "address_my": "",
             "activity_preferences": " NATURE_ECO_CONSERVATION , OUTDOOR_LEADERSHIP_CAMPS ",
+            "location_preference": "INSIDE_MALAYSIA",
+            "availability_from": "2027-06-01",
+            "availability_to": "2027-08-31",
         }
     )
     assert errors == []
@@ -65,6 +68,9 @@ def test_normalize_profile_updates_validates_and_preserves_clears():
         cleaned["activity_preferences"]
         == "NATURE_ECO_CONSERVATION, OUTDOOR_LEADERSHIP_CAMPS"
     )
+    assert cleaned["location_preference"] == "INSIDE_MALAYSIA"
+    assert cleaned["availability_from"] == "2027-06-01"
+    assert cleaned["availability_to"] == "2027-08-31"
 
     _cleaned, errors = normalize_profile_updates(
         {
@@ -72,10 +78,17 @@ def test_normalize_profile_updates_validates_and_preserves_clears():
             "github_url": "javascript:alert(1)",
             "cgpa": "3.53.1",
             "activity_preferences": "NATURE_ECO_CONSERVATION, UNKNOWN_TRACK",
+            "location_preference": "MOON",
+            "availability_from": "2027-13-01",
             "unknown_field": "x",
         }
     )
-    assert len(errors) == 5
+    assert len(errors) == 7
+
+    _cleaned, errors = normalize_profile_updates(
+        {"availability_from": "2027-09-01", "availability_to": "2027-06-01"}
+    )
+    assert errors == ["availability_from must be on or before availability_to."]
 
 
 def test_atomic_write_is_private_and_leaves_no_temp_files(tmp_path):
@@ -108,6 +121,9 @@ def test_portfolio_syncs_private_profiles_and_clears_vault_values(tmp_path):
             "email": "mahdi@example.org",
             "cgpa": "3.53 / 4.00",
             "activity_preferences": "NATURE_ECO_CONSERVATION, OUTDOOR_LEADERSHIP_CAMPS",
+            "location_preference": "OUTSIDE_MALAYSIA",
+            "availability_from": "2027-06-01",
+            "availability_to": "2027-08-31",
         }
     )
 
@@ -120,6 +136,9 @@ def test_portfolio_syncs_private_profiles_and_clears_vault_values(tmp_path):
         candidate["candidate"]["activity_preferences"]
         == "NATURE_ECO_CONSERVATION, OUTDOOR_LEADERSHIP_CAMPS"
     )
+    assert candidate["candidate"]["location_preference"] == "OUTSIDE_MALAYSIA"
+    assert candidate["candidate"]["availability_from"] == "2027-06-01"
+    assert candidate["candidate"]["availability_to"] == "2027-08-31"
 
     master = yaml.safe_load(
         (config_dir / "master_profile.yaml").read_text(encoding="utf-8")
@@ -129,6 +148,9 @@ def test_portfolio_syncs_private_profiles_and_clears_vault_values(tmp_path):
         master["personal"]["activity_preferences"]
         == "NATURE_ECO_CONSERVATION, OUTDOOR_LEADERSHIP_CAMPS"
     )
+    assert master["personal"]["location_preference"] == "OUTSIDE_MALAYSIA"
+    assert master["personal"]["availability_from"] == "2027-06-01"
+    assert master["personal"]["availability_to"] == "2027-08-31"
     assert master["education"]["cgpa"] == "3.53 / 4.00"
 
     db = OpportunityDatabase(tmp_path / "vault.db")
@@ -145,6 +167,18 @@ def test_portfolio_syncs_private_profiles_and_clears_vault_values(tmp_path):
             activities["field_value"]
             == "NATURE_ECO_CONSERVATION, OUTDOOR_LEADERSHIP_CAMPS"
         )
+        location = conn.execute(
+            "SELECT field_value FROM candidate_vault WHERE field_key = 'location_preference'"
+        ).fetchone()
+        assert location["field_value"] == "OUTSIDE_MALAYSIA"
+        available_from = conn.execute(
+            "SELECT field_value FROM candidate_vault WHERE field_key = 'availability_from'"
+        ).fetchone()
+        assert available_from["field_value"] == "2027-06-01"
+        available_to = conn.execute(
+            "SELECT field_value FROM candidate_vault WHERE field_key = 'availability_to'"
+        ).fetchone()
+        assert available_to["field_value"] == "2027-08-31"
 
     pm.update_profile({"email": ""})
     with db.connect() as conn:

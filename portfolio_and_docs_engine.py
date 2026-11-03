@@ -48,6 +48,12 @@ ACTIVITY_PREFERENCE_OPTIONS_AR: Dict[str, str] = {
     "MENA_GCC_ASEAN_SPECIAL": "فرص الشرق الأوسط والخليج وآسيان",
 }
 
+LOCATION_PREFERENCE_OPTIONS_AR: Dict[str, str] = {
+    "INSIDE_MALAYSIA": "داخل ماليزيا فقط",
+    "OUTSIDE_MALAYSIA": "خارج ماليزيا فقط",
+    "ANY": "داخل وخارج ماليزيا",
+}
+
 
 AUTHENTIC_PORTFOLIO: Dict[str, Any] = {
     "personal": {
@@ -73,6 +79,9 @@ AUTHENTIC_PORTFOLIO: Dict[str, Any] = {
         "dietary_preference": "Halal (حلال)",
         "tshirt_size": "M (Medium)",
         "activity_preferences": "",
+        "location_preference": "",
+        "availability_from": "",
+        "availability_to": "",
         "swimming_fitness": "Capable swimmer, enthusiastic outdoor camper & trekker",
         "emergency_contact": "Family Contact - Kuwait"
     },
@@ -183,6 +192,9 @@ PROFILE_FIELD_LOCATIONS: Dict[str, Tuple[str, str]] = {
     "passport_number": ("personal", "passport_number"),
     "address_my": ("personal", "address_my"),
     "activity_preferences": ("personal", "activity_preferences"),
+    "location_preference": ("personal", "location_preference"),
+    "availability_from": ("personal", "availability_from"),
+    "availability_to": ("personal", "availability_to"),
     "cgpa": ("education", "cgpa"),
     "matric_number": ("education", "matric_number"),
     "github_url": ("personal", "github_url"),
@@ -195,6 +207,9 @@ VAULT_KEY_BY_PROFILE_FIELD: Dict[str, str] = {
     "passport_number": "passport_number",
     "address_my": "residential_address_my",
     "activity_preferences": "activity_preferences",
+    "location_preference": "location_preference",
+    "availability_from": "availability_from",
+    "availability_to": "availability_to",
     "cgpa": "current_cgpa",
     "matric_number": "utm_matric_number",
     "github_url": "github_or_portfolio_url",
@@ -263,6 +278,17 @@ def normalize_profile_updates(
                 errors.append("activity_preferences contains duplicate tracks.")
             else:
                 cleaned[field] = ", ".join(tracks)
+        elif field == "location_preference":
+            if value not in LOCATION_PREFERENCE_OPTIONS_AR:
+                errors.append(
+                    "location_preference must be INSIDE_MALAYSIA, "
+                    "OUTSIDE_MALAYSIA, or ANY."
+                )
+        elif field in ("availability_from", "availability_to"):
+            try:
+                dt.date.fromisoformat(value)
+            except ValueError:
+                errors.append(f"{field} must be a valid ISO date (YYYY-MM-DD).")
         elif field == "github_url":
             if len(value) > 300:
                 errors.append("github_url must be 300 characters or fewer.")
@@ -272,6 +298,15 @@ def normalize_profile_updates(
                     errors.append("github_url must be an absolute http(s) URL.")
         else:
             errors.append(f"Unknown profile field: {field}")
+
+    start = cleaned.get("availability_from", "")
+    end = cleaned.get("availability_to", "")
+    if start and end:
+        try:
+            if dt.date.fromisoformat(start) > dt.date.fromisoformat(end):
+                errors.append("availability_from must be on or before availability_to.")
+        except ValueError:
+            pass
     return cleaned, errors
 
 
@@ -396,6 +431,9 @@ class PortfolioManager:
             "github": personal.get("github_url"),
             "address": personal.get("address_my"),
             "activity_preferences": personal.get("activity_preferences"),
+            "location_preference": personal.get("location_preference"),
+            "availability_from": personal.get("availability_from"),
+            "availability_to": personal.get("availability_to"),
         }
         for key, value in mapping.items():
             if value is not None:
@@ -421,6 +459,9 @@ class PortfolioManager:
             "github_url": "github_url",
             "address_my": "current_residence",
             "activity_preferences": "activity_preferences",
+            "location_preference": "location_preference",
+            "availability_from": "availability_from",
+            "availability_to": "availability_to",
         }
         for source_key, target_key in personal_mapping.items():
             if source_key in source_personal:
@@ -473,6 +514,9 @@ class PortfolioManager:
             ("dietary_preference", p.get("dietary_preference", ""), "logistics", "التفضيلات الغذائية"),
             ("tshirt_and_gear_size", p.get("tshirt_size", ""), "logistics", "مقاس القميص والمعدات الميدانية"),
             ("activity_preferences", p.get("activity_preferences", ""), "preferences", "تفضيلات أنواع الأنشطة"),
+            ("location_preference", p.get("location_preference", ""), "preferences", "تفضيل موقع الفرصة (داخل/خارج ماليزيا)"),
+            ("availability_from", p.get("availability_from", ""), "availability", "تاريخ بداية الإتاحة"),
+            ("availability_to", p.get("availability_to", ""), "availability", "تاريخ نهاية الإتاحة"),
             ("swimming_and_outdoor_fitness", p.get("swimming_fitness", ""), "outdoor", "اللياقة الميدانية والسباحة والتخييم"),
             ("cv_pdf_path", str(CV_PDF_FILE), "documents", "مسار ملف السيرة الذاتية PDF"),
         ]
@@ -934,90 +978,22 @@ class PortfolioManager:
     # =========================================================================
 
     def synthesize_tailored_motivation_letter(self, opp: Dict[str, Any]) -> str:
+        """Return a grounded motivation statement built from the real profile.
+
+        The old template opened with "I am writing to express my enthusiastic
+        application" and padded the essay with generic claims. The writer now
+        selects one real project and one real experience, states the candidate's
+        limits honestly, and is validated by :mod:`writing_rules`.
         """
-        Synthesizes an authentic, compelling 4-paragraph Statement of Purpose
-        specifically customized for the opportunity's domain and host institution.
-        """
-        p = self.data.get("personal", {})
-        edu = self.data.get("education", {})
-        skills = self.data.get("skills", {})
+        from writing_rules import build_motivation_letter
 
-        title = opp.get("title", "International Academic Opportunity")
-        organizer = opp.get("organizer", "the Selection Committee")
-        city = opp.get("location_city", "Host City")
-        country = opp.get("location_country", "Host Country")
-        track = opp.get("track_category", "ACADEMIC")
+        try:
+            from typst_agentic_cv_engine import MasterProfileManager
 
-        full_name = p.get("full_name_en", "Mohammad Mahdi Alsalkadi")
-        degree = edu.get("degree", "Bachelor of Computer Science (Artificial Intelligence) with Honours")
-        university = edu.get("current_institution", "Universiti Teknologi Malaysia (UTM)")
-        year = edu.get("academic_year", "Year 1")
-        cgpa = edu.get("cgpa", "3.53 / 4.00")
-
-        # Candidate strict directive: Never mention Kuwait / GCC residency unless explicitly demanded by the opportunity!
-        corpus = f"{title} {opp.get('raw_description', '')} {opp.get('raw_terms_text', '')}".lower()
-        is_gcc_mandated = any(k in corpus for k in ["kuwait", "gcc", "gulf countries", "الكويت", "الخليج", "مجلس التعاون"])
-
-        bg_text = (
-            "being a Syrian national with valid family residency in Kuwait and currently undertaking university studies in Malaysia"
-            if is_gcc_mandated
-            else "being a Syrian national currently undertaking university studies in Artificial Intelligence with honours in Malaysia"
-        )
-
-        # Paragraph 1: Sincere Introduction & Academic Motivation
-        p1 = (
-            f"Dear Selection Committee of {organizer},\n\n"
-            f"I am writing to express my enthusiastic application for {title} in {city}, {country}. "
-            f"As a {year} undergraduate pursuing a {degree} at {university} (currently maintaining a CGPA of {cgpa}), "
-            f"my academic journey is grounded in resilience, high ambition, and technical focus—{bg_text}. "
-            f"This background has instilled in me a disciplined work ethic and a genuine drive to master modern "
-            f"computational tools to solve real-world challenges. Participating in {title} represents "
-            f"a pivotal milestone in my academic development."
-        )
-
-        # Paragraph 2: Technical Grounding & Learning Trajectory
-        p2 = (
-            f"Throughout my foundational coursework at UTM, I have built a solid grasp of programming in Python and C++, data structures, and algorithmic logic. "
-            f"Currently, I am actively expanding my practical skills into deep learning frameworks, specifically experimenting with PyTorch. "
-            f"Driven by a passion to apply technology meaningfully, I have also developed 'ZCO-Hunter'—a Python-based agentic pipeline that automates "
-            f"opportunity monitoring and eligibility audits for international students. I recognize that I am at the beginning of my research journey, "
-            f"which makes me all the more eager to absorb mentorship, tackle hands-on laboratory or collaborative challenges, and learn from leading domain experts."
-        )
-
-        # Paragraph 3: Specific Alignment with the Host Program
-        if "NATURE" in track or "CONSERVATION" in track:
-            p3 = (
-                f"What specifically excites me about {title} is its tangible commitment to environmental conservation and field engagement. "
-                f"Beyond computing, I have an authentic love for the outdoors, wilderness camping, trekking, and swimming. I am eager to combine my field readiness "
-                f"with my growing technical knowledge in AI, exploring how automated models can support biodiversity protection and tropical ecosystem monitoring. "
-                f"I am fully prepared for the physical demands of field camp expeditions and look forward to contributing actively to group initiatives."
-            )
-        elif "FELLOWSHIP" in track or "GOV" in track or "POLICY" in track:
-            p3 = (
-                f"The distinctive focus of {title} on AI governance, safety, and societal impact strongly aligns with my intellectual curiosities. "
-                f"As AI systems evolve rapidly, understanding the ethical boundaries and policy frameworks governing their deployment is paramount. "
-                f"My background across the Arab world and Southeast Asia allows me to contribute a fresh, inclusive perspective to your cohort's discussions "
-                f"on how artificial intelligence can be responsibly stewarded across diverse developing economies."
-            )
-        else:
-            p3 = (
-                f"The exceptional academic environment of {organizer} provides the ideal crucible to elevate my research methodology and practical acumen. "
-                f"I am enthusiastic about immersing myself in high-standard academic inquiry, collaborating alongside motivated international peers, and "
-                f"gaining direct exposure to advanced problem-solving techniques. The mentorship offered through {title} will provide foundational preparation "
-                f"for my future academic trajectory and prospective graduate studies."
-            )
-
-        # Paragraph 4: Commitment & Closing
-        p4 = (
-            f"I am fully committed to dedicating my complete energy, curiosity, and collaborative spirit to every aspect of {title}. "
-            f"Thank you very much for your time, consideration, and dedication to fostering aspiring students.\n\n"
-            f"Sincerely,\n"
-            f"{full_name}\n"
-            f"{degree}, Universiti Teknologi Malaysia\n"
-            f"Email: {p.get('email')} | Phone: {p.get('phone_my')}"
-        )
-
-        return f"{p1}\n\n{p2}\n\n{p3}\n\n{p4}"
+            profile = MasterProfileManager().data
+        except Exception:
+            profile = self.data
+        return build_motivation_letter(opp, profile)
 
 
 # =============================================================================

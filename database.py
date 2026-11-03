@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class OpportunityStatus:
@@ -62,6 +62,8 @@ class RawOpportunityRecord:
     source_type: str = ""
     source_confidence: Optional[float] = None
     deadline_confidence: Optional[float] = None
+    program_start_iso: str = ""
+    program_end_iso: str = ""
     provenance: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -127,6 +129,8 @@ class OpportunityDatabase:
                     raw_description TEXT NOT NULL,
                     raw_terms_text TEXT NOT NULL DEFAULT '',
                     deadline_iso TEXT NOT NULL,
+                    program_start_iso TEXT NOT NULL DEFAULT '',
+                    program_end_iso TEXT NOT NULL DEFAULT '',
                     source_feed_id TEXT NOT NULL,
                     required_form_fields_json TEXT NOT NULL DEFAULT '[]',
                     status TEXT NOT NULL DEFAULT 'RAW_INGESTED',
@@ -322,6 +326,23 @@ class OpportunityDatabase:
                 ),
             )
 
+        if 4 not in applied:
+            columns = self._table_columns(conn, "opportunities")
+            for name in ("program_start_iso", "program_end_iso"):
+                if name not in columns:
+                    conn.execute(
+                        f"ALTER TABLE opportunities ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
+                    )
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at, description) "
+                "VALUES (?, ?, ?)",
+                (
+                    4,
+                    dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "Add program start and end dates",
+                ),
+            )
+
     @staticmethod
     def _infer_source_type_values(feed_id: str, apply_url: str, explicit: str = "") -> str:
         if explicit:
@@ -399,6 +420,8 @@ class OpportunityDatabase:
             "source_type": source_type,
             "deadline_iso": record.deadline_iso,
             "deadline_confidence": round(float(deadline_confidence), 3),
+            "program_start_iso": record.program_start_iso,
+            "program_end_iso": record.program_end_iso,
             **record.provenance,
         }
 
@@ -409,10 +432,11 @@ class OpportunityDatabase:
                     fingerprint_sha256, title, organizer, source_url, apply_url,
                     location_country, location_city, is_inside_malaysia,
                     track_category, raw_description, raw_terms_text,
-                    deadline_iso, source_feed_id, required_form_fields_json,
+                    deadline_iso, program_start_iso, program_end_iso,
+                    source_feed_id, required_form_fields_json,
                     status, ingested_at, source_type, source_confidence,
                     deadline_confidence, provenance_json, last_seen_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     fingerprint,
@@ -427,6 +451,8 @@ class OpportunityDatabase:
                     record.raw_description,
                     record.raw_terms_text,
                     record.deadline_iso,
+                    record.program_start_iso,
+                    record.program_end_iso,
                     record.source_feed_id,
                     req_fields_json,
                     OpportunityStatus.RAW_INGESTED,
@@ -937,18 +963,29 @@ class OpportunityDatabase:
             except sqlite3.IntegrityError:
                 return False
 
-    def get_unnotified_opportunities_for_chat(self, chat_id: int) -> List[Dict[str, Any]]:
+    def get_unnotified_opportunities_for_chat(
+        self, chat_id: int, statuses: Optional[Any] = None
+    ) -> List[Dict[str, Any]]:
+        if statuses is None:
+            target_statuses = [
+                OpportunityStatus.READY_FOR_REVIEW,
+                OpportunityStatus.PAUSED_NEEDS_USER_INPUT,
+                OpportunityStatus.VERIFIED_ELIGIBLE,
+            ]
+        else:
+            target_statuses = list(statuses)
         with self.connect() as conn:
+            placeholders = ",".join("?" for _ in target_statuses)
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM opportunities
-                WHERE status IN ('VERIFIED_ELIGIBLE', 'PAUSED_NEEDS_USER_INPUT')
+                WHERE status IN ({placeholders})
                   AND opportunity_code NOT IN (
                       SELECT opportunity_code FROM telegram_notifications_sent WHERE chat_id = ?
                   )
                 ORDER BY match_score DESC, id ASC
                 """,
-                (chat_id,),
+                (*target_statuses, chat_id),
             ).fetchall()
             return [dict(r) for r in rows]
 

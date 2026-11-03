@@ -10,7 +10,10 @@
     "cgpa": "3.53 / 4.00",
     "github": "",
     "address": "Kuala Lumpur, Malaysia",
-    "activity_preferences": ""
+    "activity_preferences": "",
+    "location_preference": "",
+    "availability_from": "",
+    "availability_to": ""
   },
   "jurisdictions": {
     "nationality": {

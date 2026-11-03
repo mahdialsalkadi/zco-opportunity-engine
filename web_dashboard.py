@@ -103,6 +103,74 @@ logger = logging.getLogger("ZCO-WebDashboard")
 
 app = FastAPI(title="ZCO-Hunter Web Dashboard", version="5.2.0")
 
+AUTH_GATE_HTML = """<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZCO-Hunter | دخول لوحة التحكم</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px;
+    font-family: "Segoe UI", Tahoma, system-ui, sans-serif; color: #e2e8f0;
+    background:
+      radial-gradient(1000px 600px at 80% -10%, rgba(37, 99, 235, .28), transparent 60%),
+      radial-gradient(800px 500px at 0% 110%, rgba(16, 185, 129, .16), transparent 60%),
+      #070b14;
+  }
+  .gate {
+    width: 100%; max-width: 440px; padding: 32px; border-radius: 24px;
+    background: rgba(15, 23, 42, .82); border: 1px solid rgba(148, 163, 184, .16);
+    box-shadow: 0 24px 80px -24px rgba(0, 0, 0, .8); backdrop-filter: blur(16px);
+  }
+  .mark {
+    width: 52px; height: 52px; border-radius: 16px; display: grid; place-items: center;
+    font-size: 24px; margin-bottom: 18px;
+    background: linear-gradient(135deg, #2563eb, #4f46e5);
+    box-shadow: 0 10px 30px -10px rgba(37, 99, 235, .8);
+  }
+  h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: -.02em; }
+  p { margin: 0 0 20px; color: #94a3b8; font-size: 13px; line-height: 1.8; }
+  label { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 700; color: #cbd5e1; }
+  input {
+    width: 100%; padding: 12px 14px; border-radius: 12px; font-size: 14px;
+    border: 1px solid rgba(148, 163, 184, .22); background: #0b1220; color: #e2e8f0;
+    direction: ltr; text-align: left; outline: none;
+  }
+  input:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, .2); }
+  button {
+    width: 100%; margin-top: 12px; padding: 12px 16px; border: 0; border-radius: 12px;
+    cursor: pointer; font-size: 14px; font-weight: 800; color: #fff;
+    background: linear-gradient(135deg, #2563eb, #4f46e5);
+  }
+  button:hover { filter: brightness(1.08); }
+  .hint { margin: 18px 0 0; font-size: 11px; color: #64748b; line-height: 1.9; }
+  code {
+    direction: ltr; unicode-bidi: plaintext; display: inline-block; padding: 1px 6px;
+    border-radius: 6px; font-size: 11px; color: #93c5fd;
+    background: #0b1220; border: 1px solid rgba(148, 163, 184, .14);
+  }
+  .error { display: none; margin-top: 10px; font-size: 12px; color: #fca5a5; }
+</style>
+</head>
+<body>
+<main class="gate">
+  <div class="mark">🔒</div>
+  <h1>لوحة تحكم ZCO-Hunter</h1>
+  <p>هذه اللوحة محمية. الصق توكن الوصول للمتابعة إلى لوحة الفرص والتقديم الآلي.</p>
+  <form onsubmit="event.preventDefault(); const t=document.getElementById('token').value.trim(); if(!t){document.getElementById('err').style.display='block'; return;} window.location.href='/?token='+encodeURIComponent(t);">
+    <label for="token">Dashboard Token</label>
+    <input id="token" type="password" placeholder="الصق التوكن هنا" autocomplete="current-password" autofocus>
+    <div class="error" id="err">أدخل التوكن أولاً.</div>
+    <button type="submit">دخول آمن</button>
+  </form>
+  <p class="hint">التوكن موجود في <code>data/dashboard_token.txt</code> أو متغير <code>DASHBOARD_AUTH_TOKEN</code>.</p>
+</main>
+</body>
+</html>"""
+
 PUBLIC_PATHS = {"/favicon.ico", "/healthz"}
 
 
@@ -132,14 +200,7 @@ async def security_token_middleware(request: Request, call_next):
     )
     if not hmac.compare_digest(str(supplied), DASHBOARD_AUTH_TOKEN):
         if path == "/" or request.headers.get("accept", "").startswith("text/html"):
-            return HTMLResponse(
-                "<html dir='rtl'><body style='font-family:sans-serif;padding:2rem'>"
-                "<h2>🔒 لوحة التحكم محمية</h2>"
-                "<p>افتح الرابط مع التوكن: <code>/?token=YOUR_TOKEN</code></p>"
-                "<p>التوكن محفوظ في <code>data/dashboard_token.txt</code> أو متغير "
-                "<code>DASHBOARD_AUTH_TOKEN</code>.</p></body></html>",
-                status_code=401,
-            )
+            return HTMLResponse(AUTH_GATE_HTML, status_code=401)
         return JSONResponse(
             {"status": "error", "message": "Unauthorized. Provide a valid session cookie or X-Dashboard-Token header."},
             status_code=401,
@@ -182,6 +243,9 @@ class ProfileUpdateRequest(BaseModel):
     passport_number: Optional[str] = Field(default=None, max_length=20)
     address_my: Optional[str] = Field(default=None, max_length=300)
     activity_preferences: Optional[str] = Field(default=None, max_length=400)
+    location_preference: Optional[str] = Field(default=None, max_length=30)
+    availability_from: Optional[str] = Field(default=None, max_length=10)
+    availability_to: Optional[str] = Field(default=None, max_length=10)
     cgpa: Optional[str] = Field(default=None, max_length=20)
     matric_number: Optional[str] = Field(default=None, max_length=30)
     github_url: Optional[str] = Field(default=None, max_length=300)
@@ -209,6 +273,7 @@ async def get_system_status() -> Dict[str, Any]:
 async def get_opportunities(
     category: Optional[str] = None,
     location: Optional[str] = None,
+    status: Optional[str] = None,
     search: Optional[str] = None,
 ) -> Dict[str, Any]:
     raw_opps = db.get_verified_opportunities()
@@ -269,7 +334,7 @@ async def get_opportunities(
         country = o.get("location_country", "")
         is_my = bool(o.get("is_inside_malaysia", 0))
         track = o.get("track_category", "GENERAL")
-        status = o.get("status", "")
+        opp_status = o.get("status", "")
         score = o.get("match_score", 92)
         deadline = o.get("deadline_iso", "")
         apply_url = o.get("apply_url", "")
@@ -309,6 +374,13 @@ async def get_opportunities(
             continue
         if location == "INTERNATIONAL" and is_my:
             continue
+        if status and status != "ALL":
+            if status == "READY_FOR_REVIEW" and opp_status != "READY_FOR_REVIEW":
+                continue
+            elif status == "APPLICATION_FAILED" and opp_status != "APPLICATION_FAILED":
+                continue
+            elif status not in ["READY_FOR_REVIEW", "APPLICATION_FAILED"] and opp_status != status:
+                continue
         if search:
             search_lower = search.lower()
             if not (search_lower in title.lower() or search_lower in organizer.lower() or search_lower in city.lower() or search_lower in country.lower() or search_lower in explanation_ar.lower()):
@@ -325,8 +397,10 @@ async def get_opportunities(
             "category_label_ar": category_label_ar,
             "track_category": track,
             "match_score": score,
-            "status": status,
+            "status": opp_status,
             "deadline_iso": deadline,
+            "program_start_iso": o.get("program_start_iso", ""),
+            "program_end_iso": o.get("program_end_iso", ""),
             "apply_url": apply_url,
             "source_type": o.get("source_type", "unknown"),
             "source_confidence": o.get("source_confidence", 0),
@@ -556,6 +630,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#060a13">
+    <meta name="description" content="ZCO-Hunter — منصة مراجعة الفرص المجانية والتقديم الآلي لمحمد مهدي السلقدي">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎯</text></svg>">
     <title>ZCO-Hunter | منصة صيد الفرص الذكية والتقديم الآلي</title>
     <!-- Tailwind CSS & FontAwesome -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css">
@@ -566,44 +643,114 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
     <style>
+        :root {
+            --bg: #060a13;
+            --panel: rgba(13, 21, 38, 0.82);
+            --line: rgba(148, 163, 184, 0.14);
+            --accent: #3b82f6;
+        }
         * {
             font-family: 'Cairo', 'Inter', -apple-system, sans-serif;
         }
+        html { scroll-behavior: smooth; }
         body {
-            background-color: #0f172a;
-            color: #f1f5f9;
+            background-color: var(--bg);
+            color: #e2e8f0;
+            background-image:
+                radial-gradient(900px 500px at 85% -10%, rgba(37, 99, 235, 0.18), transparent 60%),
+                radial-gradient(700px 420px at 0% 100%, rgba(16, 185, 129, 0.10), transparent 60%);
+            background-attachment: fixed;
+        }
+        ::selection { background: #2563eb; color: #fff; }
+        .glass-header { background: rgba(6, 10, 19, 0.82); backdrop-filter: blur(16px); }
+        .card-glow {
+            transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease;
         }
         .card-glow:hover {
-            box-shadow: 0 10px 25px -5px rgba(59, 130, 246, 0.25), 0 8px 10px -6px rgba(59, 130, 246, 0.2);
+            transform: translateY(-4px);
+            box-shadow: 0 22px 45px -20px rgba(37, 99, 235, .55);
+            border-color: rgba(59, 130, 246, .32);
+        }
+        .opp-card { position: relative; overflow: hidden; }
+        .opp-card::before {
+            content: ""; position: absolute; inset: 0 0 auto 0; height: 2px;
+            background: linear-gradient(90deg, transparent, rgba(59,130,246,.9), rgba(99,102,241,.6), transparent);
+            opacity: .75;
+        }
+        .kpi-card {
+            position: relative; overflow: hidden;
+            transition: transform .2s ease, border-color .2s ease, background .2s ease;
+        }
+        .kpi-card:hover {
             transform: translateY(-2px);
-            transition: all 0.2s ease-in-out;
+            border-color: rgba(59, 130, 246, .28);
+            background: rgba(17, 28, 49, .9);
         }
+        .kpi-card::after {
+            content: ""; position: absolute; inset: auto 0 0 0; height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(59,130,246,.35), transparent);
+        }
+        .tab-btn { border: 1px solid transparent; white-space: nowrap; }
         .tab-btn.active {
-            background-color: #2563eb;
-            color: #ffffff;
-            font-weight: 700;
+            background: linear-gradient(135deg, #2563eb, #4f46e5);
+            color: #fff; font-weight: 700; border-color: rgba(96, 165, 250, .45);
+            box-shadow: 0 8px 22px -10px rgba(37, 99, 235, .9);
         }
-        /* Custom scrollbar */
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
+        input, select, textarea {
+            transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
         }
-        ::-webkit-scrollbar-track {
-            background: #1e293b;
+        input:focus, select:focus, textarea:focus {
+            outline: none !important;
+            border-color: #3b82f6 !important;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, .18);
         }
+        button, a { -webkit-tap-highlight-color: transparent; }
+        button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
+            outline: 2px solid #60a5fa; outline-offset: 2px;
+        }
+        .modal-panel { animation: modalIn .18s ease-out; }
+        @keyframes modalIn {
+            from { opacity: 0; transform: translateY(10px) scale(.985); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .timeline-chip { min-width: 0; }
+        .timeline-chip .value { overflow-wrap: anywhere; }
+        body.modal-open { overflow: hidden; }
+        .skeleton {
+            position: relative; overflow: hidden; min-height: 300px;
+            background: #0d1526; border: 1px solid rgba(148, 163, 184, .08);
+            border-radius: 24px;
+        }
+        .skeleton::after {
+            content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+            background: linear-gradient(90deg, transparent, rgba(148,163,184,.08), transparent);
+            animation: shimmer 1.4s infinite;
+        }
+        @keyframes shimmer { 100% { transform: translateX(100%); } }
+        .toast { animation: toastIn .2s ease-out; }
+        @keyframes toastIn {
+            from { opacity: 0; transform: translateY(-8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .urgency-soon { color: #fbbf24; }
+        .urgency-expired { color: #f87171; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        ::-webkit-scrollbar { width: 9px; height: 9px; }
+        ::-webkit-scrollbar-track { background: #0b1220; }
         ::-webkit-scrollbar-thumb {
-            background: #475569;
-            border-radius: 4px;
+            background: #334155; border-radius: 999px; border: 2px solid #0b1220;
         }
-        ::-webkit-scrollbar-thumb:hover {
-            background: #64748b;
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation: none !important; transition: none !important; }
         }
     </style>
 </head>
 <body class="min-h-screen flex flex-col">
 
     <!-- Top Navigation Bar -->
-    <header class="bg-gray-900 border-b border-gray-800 sticky top-0 z-40 shadow-lg">
+    <header class="glass-header border-b border-white/5 sticky top-0 z-40">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-wrap items-center justify-between gap-4">
             <div class="flex items-center space-x-3 space-x-reverse">
                 <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-md">
@@ -616,7 +763,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             </div>
 
             <!-- Candidate Identity Pill -->
-            <div class="flex items-center space-x-3 space-x-reverse bg-gray-800 px-4 py-2 rounded-xl border border-gray-700">
+            <div class="hidden sm:flex items-center space-x-3 space-x-reverse bg-gray-800/80 px-4 py-2 rounded-xl border border-gray-700/80">
                 <div class="w-8 h-8 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center font-bold">
                     <i class="fa-solid fa-user-graduate"></i>
                 </div>
@@ -652,31 +799,46 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <main class="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6">
 
         <!-- KPI Summary Cards -->
-        <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
-            <div class="bg-gray-900 border border-gray-800 p-4 rounded-2xl">
-                <div class="text-gray-400 text-xs mb-1 font-semibold">إجمالي الفرص المفحوصة</div>
-                <div class="text-2xl font-black text-white" id="stat-total">--</div>
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+            <div class="kpi-card bg-gray-900/80 border border-gray-800 p-4 rounded-2xl">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-gray-400 text-[11px] font-semibold">إجمالي الفرص المفحوصة</span>
+                    <i class="fa-solid fa-list-check text-blue-400/80 text-xs"></i>
+                </div>
+                <div class="text-2xl font-black text-white" id="stat-total" aria-live="polite">--</div>
             </div>
-            <div class="bg-gray-900 border border-gray-800 p-4 rounded-2xl">
-                <div class="text-emerald-400 text-xs mb-1 font-semibold">فرص مؤهلة 100% مجانية</div>
-                <div class="text-2xl font-black text-emerald-400" id="stat-verified">--</div>
+            <div class="kpi-card bg-gray-900/80 border border-gray-800 p-4 rounded-2xl">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-emerald-400 text-[11px] font-semibold">فرص مؤهلة 100% مجانية</span>
+                    <i class="fa-solid fa-circle-check text-emerald-400/80 text-xs"></i>
+                </div>
+                <div class="text-2xl font-black text-emerald-400" id="stat-verified" aria-live="polite">--</div>
             </div>
-            <div class="bg-gray-900 border border-gray-800 p-4 rounded-2xl">
-                <div class="text-cyan-400 text-xs mb-1 font-semibold">تطوع وتنظيف شواطئ</div>
-                <div class="text-2xl font-black text-cyan-400" id="stat-vol">--</div>
+            <div class="kpi-card bg-gray-900/80 border border-gray-800 p-4 rounded-2xl">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-cyan-400 text-[11px] font-semibold">تطوع وتنظيف شواطئ</span>
+                    <i class="fa-solid fa-hand-holding-heart text-cyan-400/80 text-xs"></i>
+                </div>
+                <div class="text-2xl font-black text-cyan-400" id="stat-vol" aria-live="polite">--</div>
             </div>
-            <div class="bg-gray-900 border border-gray-800 p-4 rounded-2xl">
-                <div class="text-amber-400 text-xs mb-1 font-semibold">مخيمات بيئية وغابات</div>
-                <div class="text-2xl font-black text-amber-400" id="stat-camps">--</div>
+            <div class="kpi-card bg-gray-900/80 border border-gray-800 p-4 rounded-2xl">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-amber-400 text-[11px] font-semibold">مخيمات بيئية وغابات</span>
+                    <i class="fa-solid fa-tree text-amber-400/80 text-xs"></i>
+                </div>
+                <div class="text-2xl font-black text-amber-400" id="stat-camps" aria-live="polite">--</div>
             </div>
-            <div class="bg-gray-900 border border-gray-800 p-4 rounded-2xl">
-                <div class="text-purple-400 text-xs mb-1 font-semibold">منح وبحث وذكاء اصطناعي</div>
-                <div class="text-2xl font-black text-purple-400" id="stat-ai">--</div>
+            <div class="kpi-card bg-gray-900/80 border border-gray-800 p-4 rounded-2xl">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-purple-400 text-[11px] font-semibold">منح وبحث وذكاء اصطناعي</span>
+                    <i class="fa-solid fa-brain text-purple-400/80 text-xs"></i>
+                </div>
+                <div class="text-2xl font-black text-purple-400" id="stat-ai" aria-live="polite">--</div>
             </div>
         </div>
 
         <!-- Filter Tabs & Controls -->
-        <div class="bg-gray-900 border border-gray-800 p-4 rounded-2xl mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div class="bg-gray-900/80 border border-gray-800/80 p-4 rounded-2xl mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
             
             <!-- Category Tabs -->
             <div class="flex flex-wrap gap-2" id="category-tabs">
@@ -703,6 +865,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     <input type="text" id="search-input" onkeyup="handleSearch()" placeholder="ابحث باسم الفرصة، المدينة..." class="w-full bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-xl px-4 py-2 pr-9 focus:outline-none focus:border-blue-500">
                     <i class="fa-solid fa-search absolute right-3 top-2.5 text-gray-400 text-xs"></i>
                 </div>
+                <select id="status-filter" onchange="loadOpportunities()" class="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-xl px-3 py-2 focus:outline-none focus:border-blue-500">
+                    <option value="">جميع الحالات</option>
+                    <option value="READY_FOR_REVIEW">📝 جاهزة للتقديم فوراً (READY)</option>
+                    <option value="APPLICATION_FAILED">🛠 تحتاج تدخلاً (FAILED)</option>
+                </select>
                 <select id="location-filter" onchange="loadOpportunities()" class="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-xl px-3 py-2 focus:outline-none focus:border-blue-500">
                     <option value="">جميع المواقع</option>
                     <option value="MALAYSIA">🇲🇾 داخل ماليزيا</option>
@@ -711,10 +878,30 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             </div>
         </div>
 
+        <!-- Results Summary & Sort -->
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <div id="results-summary" class="text-[11px] text-gray-400 font-semibold">جارٍ تحميل الفرص...</div>
+            <div class="flex items-center gap-2 text-[11px] text-gray-400">
+                <label for="sort-select" class="font-semibold">ترتيب حسب:</label>
+                <select id="sort-select" onchange="loadOpportunities()" class="bg-gray-800/80 border border-gray-700 text-gray-200 text-[11px] rounded-lg px-2.5 py-1.5 focus:border-blue-500">
+                    <option value="match">نسبة التطابق</option>
+                    <option value="deadline">آخر موعد للتسجيل</option>
+                </select>
+            </div>
+        </div>
+
         <!-- Opportunities Grid -->
-        <div id="loading-spinner" class="py-16 text-center text-gray-400 text-sm hidden">
-            <i class="fa-solid fa-circle-notch fa-spin text-3xl text-blue-500 mb-3"></i>
-            <div>جاري تحميل أحدث الفرص والتحقق من التغطية...</div>
+        <div id="loading-spinner" class="hidden">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6" aria-hidden="true">
+                <div class="skeleton"></div>
+                <div class="skeleton"></div>
+                <div class="skeleton"></div>
+                <div class="skeleton"></div>
+            </div>
+            <div class="text-center text-gray-400 text-sm mt-4">
+                <i class="fa-solid fa-circle-notch fa-spin text-blue-500 ml-1"></i>
+                جاري تحميل أحدث الفرص والتحقق من التغطية...
+            </div>
         </div>
 
         <div id="opps-container" class="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -726,11 +913,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div>لا توجد فرص مطابقة لهذا التصنيف حالياً. جرب اختيار تصنيف آخر أو اضغط على "تدقيق فوري".</div>
         </div>
 
+        <div id="error-state" class="hidden py-16 text-center">
+            <div class="inline-flex flex-col items-center gap-3 max-w-md">
+                <div class="w-14 h-14 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-400 flex items-center justify-center text-xl">
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                </div>
+                <div class="text-sm font-bold text-red-300">تعذر تحميل الفرص</div>
+                <div class="text-xs text-gray-400">تأكد من أن الخادم يعمل ثم أعد المحاولة.</div>
+                <button onclick="loadOpportunities()" class="px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 rounded-xl text-xs font-bold">
+                    <i class="fa-solid fa-rotate-right ml-1"></i> إعادة المحاولة
+                </button>
+            </div>
+        </div>
+
     </main>
 
     <!-- Motivation Letter / Kit Modal -->
-    <div id="kit-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 hidden">
-        <div class="bg-gray-900 border border-gray-800 rounded-3xl max-w-3xl w-full p-6 max-h-[90vh] flex flex-col shadow-2xl">
+    <div id="kit-modal" role="dialog" aria-modal="true" class="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 z-50 hidden" onclick="if(event.target===this) closeKitModal()">
+        <div class="modal-panel bg-gray-900 border border-gray-800 rounded-3xl max-w-3xl w-full p-6 max-h-[90vh] flex flex-col shadow-2xl">
             <div class="flex items-center justify-between border-b border-gray-800 pb-4 mb-4">
                 <div class="flex items-center space-x-3 space-x-reverse">
                     <div class="w-10 h-10 rounded-xl bg-blue-600/20 text-blue-400 flex items-center justify-center">
@@ -785,8 +985,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
 
     <!-- Profile View & Edit Modal -->
-    <div id="profile-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 hidden">
-        <div class="bg-gray-900 border border-gray-800 rounded-3xl max-w-xl w-full p-6 max-h-[90vh] flex flex-col shadow-2xl">
+    <div id="profile-modal" role="dialog" aria-modal="true" class="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 z-50 hidden" onclick="if(event.target===this) closeProfileModal()">
+        <div class="modal-panel bg-gray-900 border border-gray-800 rounded-3xl max-w-2xl w-full p-6 max-h-[90vh] flex flex-col shadow-2xl">
             <div class="flex items-center justify-between border-b border-gray-800 pb-4 mb-4">
                 <div class="flex items-center space-x-3 space-x-reverse">
                     <div class="w-10 h-10 rounded-xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center">
@@ -807,7 +1007,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     <label class="block text-gray-400 mb-1 font-semibold">الاسم الكامل بالإنجليزية (كما في الجواز):</label>
                     <input type="text" id="prof-name" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
                 </div>
-                <div class="grid grid-cols-2 gap-3">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                         <label class="block text-gray-400 mb-1 font-semibold">البريد الإلكتروني الجامعي:</label>
                         <input type="email" id="prof-email" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
@@ -817,7 +1017,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         <input type="text" id="prof-phone" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
                     </div>
                 </div>
-                <div class="grid grid-cols-2 gap-3">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                         <label class="block text-gray-400 mb-1 font-semibold">رقم جواز السفر:</label>
                         <input type="text" id="prof-passport" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
@@ -827,7 +1027,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         <input type="text" id="prof-matric" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
                     </div>
                 </div>
-                <div class="grid grid-cols-2 gap-3">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                         <label class="block text-gray-400 mb-1 font-semibold">المعدل التراكمي (CGPA):</label>
                         <input type="text" id="prof-cgpa" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
@@ -841,9 +1041,28 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     <label class="block text-gray-400 mb-1 font-semibold">عنوان السكن في كوالالمبور:</label>
                     <input type="text" id="prof-address" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
                 </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-gray-400 mb-1 font-semibold">متاح من تاريخ:</label>
+                        <input type="date" id="prof-avail-from" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
+                    </div>
+                    <div>
+                        <label class="block text-gray-400 mb-1 font-semibold">متاح حتى تاريخ:</label>
+                        <input type="date" id="prof-avail-to" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-gray-400 mb-1 font-semibold">تفضيل موقع الفرصة:</label>
+                    <select id="prof-location-pref" class="w-full bg-gray-800 border border-gray-700 rounded-xl p-2.5 text-gray-200">
+                        <option value="">بدون تفضيل</option>
+                        <option value="INSIDE_MALAYSIA">داخل ماليزيا فقط</option>
+                        <option value="OUTSIDE_MALAYSIA">خارج ماليزيا فقط</option>
+                        <option value="ANY">داخل وخارج ماليزيا</option>
+                    </select>
+                </div>
                 <div>
                     <label class="block text-gray-400 mb-1 font-semibold">تفضيلات أنواع الأنشطة:</label>
-                    <div class="grid grid-cols-2 gap-2">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         <label class="flex items-center gap-2 bg-gray-800/60 border border-gray-700 rounded-xl p-2 cursor-pointer">
                             <input type="checkbox" name="activity-pref" value="NATURE_ECO_CONSERVATION" class="accent-emerald-500">
                             <span class="text-gray-300">الطبيعة والبيئة</span>
@@ -875,7 +1094,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     💡 <strong>ملاحظة أمان:</strong> أي تعديل هنا ينعكس فوراً على خزانة الذاكرة المستدامة (SQLite Vault) ويعيد توليد الـ CV المخصص لكل فرصة بصورة تلقائية.
                 </div>
 
-                <div class="border-t border-gray-800 pt-4 flex items-center justify-end space-x-2 space-x-reverse">
+                <div class="border-t border-gray-800/80 pt-4 flex items-center justify-end space-x-2 space-x-reverse sticky bottom-0 bg-gray-900/95 backdrop-blur rounded-b-3xl">
                     <button type="button" id="btn-close-profile-modal" onclick="closeProfileModal()" class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-xl font-semibold">إلغاء</button>
                     <button type="submit" class="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold">حفظ التعديلات</button>
                 </div>
@@ -883,10 +1102,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
     </div>
 
+    <!-- Toast Notifications -->
+    <div id="toast-container" class="fixed top-20 inset-x-4 flex flex-col items-center gap-2 pointer-events-none" style="z-index:60"></div>
+
+    <!-- Confirm Dialog -->
+    <div id="confirm-modal" class="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 hidden" style="z-index:70" role="dialog" aria-modal="true">
+        <div class="modal-panel bg-gray-900 border border-gray-800 rounded-3xl max-w-md w-full p-6 shadow-2xl">
+            <div class="flex items-start gap-3">
+                <div class="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                    <i class="fa-solid fa-circle-question"></i>
+                </div>
+                <div class="flex-1">
+                    <h3 class="text-sm font-bold text-white mb-1">تأكيد الإجراء</h3>
+                    <p id="confirm-message" class="text-xs text-gray-400 leading-relaxed"></p>
+                </div>
+            </div>
+            <div class="flex items-center justify-end gap-2 mt-6">
+                <button id="confirm-cancel" type="button" class="px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-xl text-xs font-semibold">إلغاء</button>
+                <button id="confirm-ok" type="button" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold">تأكيد</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Scripts -->
     <script>
         let currentCategory = 'ALL';
         let opportunities = [];
+        let sortMode = 'match';
 
         async function initDashboard() {
             await loadProfile();
@@ -919,6 +1161,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 document.querySelectorAll('input[name="activity-pref"]').forEach(cb => {
                     cb.checked = activityPrefs.has(cb.value);
                 });
+                document.getElementById('prof-location-pref').value = p.location_preference || '';
+                document.getElementById('prof-avail-from').value = p.availability_from || '';
+                document.getElementById('prof-avail-to').value = p.availability_to || '';
                 document.getElementById('prof-github').value = p.github_url || '';
             } catch (err) {
                 console.error("Failed to load profile", err);
@@ -941,25 +1186,31 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             const spinner = document.getElementById('loading-spinner');
             const container = document.getElementById('opps-container');
             const noResults = document.getElementById('no-results');
+            const errorState = document.getElementById('error-state');
             const search = document.getElementById('search-input').value.trim();
             const location = document.getElementById('location-filter').value;
+            const statusFilter = document.getElementById('status-filter')?.value || '';
+            sortMode = document.getElementById('sort-select').value || 'match';
 
             spinner.classList.remove('hidden');
             container.innerHTML = '';
             noResults.classList.add('hidden');
+            errorState.classList.add('hidden');
 
             try {
                 const params = new URLSearchParams();
                 if (currentCategory && currentCategory !== 'ALL') params.append('category', currentCategory);
                 if (location) params.append('location', location);
+                if (statusFilter) params.append('status', statusFilter);
                 if (search) params.append('search', search);
 
                 const res = await fetch(`/api/opportunities?${params.toString()}`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const data = await res.json();
                 opportunities = data.opportunities || [];
 
                 updateKPICounters(opportunities);
-
+                updateResultsSummary();
                 spinner.classList.add('hidden');
 
                 if (opportunities.length === 0) {
@@ -967,11 +1218,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     return;
                 }
 
-                container.innerHTML = opportunities.map(opp => renderOpportunityCard(opp)).join('');
-
+                container.innerHTML = sortOpportunities(opportunities).map(opp => renderOpportunityCard(opp)).join('');
             } catch (err) {
                 console.error("Error loading opportunities", err);
                 spinner.classList.add('hidden');
+                updateResultsSummary(0);
+                errorState.classList.remove('hidden');
             }
         }
 
@@ -1001,6 +1253,76 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             return String(value || '').replace(/[^A-Za-z0-9_-]/g, '');
         }
 
+        function toast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const palette = {
+                success: 'bg-emerald-950/95 border-emerald-500/30 text-emerald-200',
+                error: 'bg-red-950/95 border-red-500/30 text-red-200',
+                info: 'bg-slate-900/95 border-blue-500/30 text-slate-200',
+            };
+            const icons = {
+                success: 'fa-circle-check',
+                error: 'fa-circle-exclamation',
+                info: 'fa-circle-info',
+            };
+            const el = document.createElement('div');
+            el.className = `toast pointer-events-auto w-full max-w-md border rounded-2xl px-4 py-3 shadow-2xl text-xs font-semibold flex items-start gap-2 ${palette[type] || palette.info}`;
+            el.innerHTML = `<i class="fa-solid ${icons[type] || icons.info} mt-0.5"></i><span class="flex-1 leading-relaxed">${escHtml(message)}</span>`;
+            container.appendChild(el);
+            setTimeout(() => {
+                el.style.opacity = '0';
+                el.style.transform = 'translateY(-6px)';
+                el.style.transition = 'all .2s ease';
+            }, 4200);
+            setTimeout(() => el.remove(), 4600);
+        }
+
+        function askConfirm(message) {
+            return new Promise((resolve) => {
+                const modal = document.getElementById('confirm-modal');
+                const ok = document.getElementById('confirm-ok');
+                const cancel = document.getElementById('confirm-cancel');
+                document.getElementById('confirm-message').innerText = message;
+                modal.classList.remove('hidden');
+                const finish = (value) => {
+                    modal.classList.add('hidden');
+                    ok.onclick = null;
+                    cancel.onclick = null;
+                    resolve(value);
+                };
+                ok.onclick = () => finish(true);
+                cancel.onclick = () => finish(false);
+            });
+        }
+
+        function setModalOpen(modalId, open) {
+            const modal = document.getElementById(modalId);
+            if (!modal) return;
+            modal.classList.toggle('hidden', !open);
+            const anyOpen = ['kit-modal', 'profile-modal'].some((id) => {
+                const el = document.getElementById(id);
+                return el && !el.classList.contains('hidden');
+            });
+            document.body.classList.toggle('modal-open', anyOpen);
+        }
+
+        function sortOpportunities(items) {
+            const copy = [...items];
+            if (sortMode === 'deadline') {
+                copy.sort((a, b) => String(a.deadline_iso || '9999-12-31').localeCompare(String(b.deadline_iso || '9999-12-31')));
+            } else {
+                copy.sort((a, b) => Number(b.match_score || 0) - Number(a.match_score || 0));
+            }
+            return copy;
+        }
+
+        function updateResultsSummary(count) {
+            const total = typeof count === 'number' ? count : opportunities.length;
+            const label = total === 0 ? 'لا توجد نتائج مطابقة' : `${total} فرصة مطابقة`;
+            const time = new Date().toLocaleTimeString('ar-MY', { hour: '2-digit', minute: '2-digit' });
+            document.getElementById('results-summary').innerText = `${label} • آخر تحديث ${time}`;
+        }
+
         function renderOpportunityCard(opp) {
             const rawCode = safeCode(opp.opportunity_code);
             const code = escHtml(rawCode);
@@ -1015,6 +1337,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             const matchScore = Number.isFinite(Number(opp.match_score)) ? Number(opp.match_score) : 0;
             const sourceConfidence = Math.max(0, Math.min(100, Math.round(Number(opp.source_confidence || 0) * 100)));
             const deadlineConfidence = Math.max(0, Math.min(100, Math.round(Number(opp.deadline_confidence || 0) * 100)));
+            const deadline = escHtml(opp.deadline_iso || 'غير محدد');
+            const programStart = escHtml(opp.program_start_iso || 'غير محدد');
+            const programEnd = escHtml(opp.program_end_iso || 'غير محدد');
+            const deadlineDate = opp.deadline_iso ? new Date(`${opp.deadline_iso}T23:59:59`) : null;
+            const daysToDeadline = deadlineDate && !Number.isNaN(deadlineDate.getTime())
+                ? Math.ceil((deadlineDate.getTime() - Date.now()) / 86400000)
+                : null;
+            let deadlineBadge = '';
+            if (daysToDeadline !== null) {
+                if (daysToDeadline < 0) {
+                    deadlineBadge = '<span class="urgency-expired font-bold">انتهى الموعد</span>';
+                } else if (daysToDeadline <= 14) {
+                    deadlineBadge = `<span class="urgency-soon font-bold">متبقي ${daysToDeadline} يوم</span>`;
+                }
+            }
             const sourceType = escHtml(opp.source_type || 'unknown');
             const applyUrl = safeHttpUrl(opp.apply_url);
             const isMY = opp.is_inside_malaysia;
@@ -1040,7 +1377,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             }
 
             return `
-            <div class="card-glow bg-gray-900 border border-gray-800 rounded-3xl p-6 flex flex-col justify-between transition-all">
+            <div class="card-glow opp-card bg-gray-900/90 border border-gray-800/90 rounded-3xl p-6 flex flex-col justify-between">
                 <div>
                     <!-- Header Badges -->
                     <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -1063,6 +1400,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                         <span><i class="fa-solid fa-location-dot text-gray-500 ml-1"></i>${city ? city + '، ' : ''}${country}</span>
                         ${locationBadge}
                         ${cvBadge}
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3 text-[11px]">
+                        <div class="bg-gray-800/60 border border-gray-700/60 rounded-xl p-2">
+                            <div class="text-gray-500">📅 آخر موعد للتسجيل</div>
+                            <div class="text-gray-200 font-semibold">${deadline}</div>
+                            ${deadlineBadge ? `<div class="mt-1 text-[10px]">${deadlineBadge}</div>` : ''}
+                        </div>
+                        <div class="bg-gray-800/60 border border-gray-700/60 rounded-xl p-2">
+                            <div class="text-gray-500">🚀 بداية الرحلة</div>
+                            <div class="text-gray-200 font-semibold">${programStart}</div>
+                        </div>
+                        <div class="bg-gray-800/60 border border-gray-700/60 rounded-xl p-2">
+                            <div class="text-gray-500">🏁 نهاية الرحلة</div>
+                            <div class="text-gray-200 font-semibold">${programEnd}</div>
+                        </div>
                     </div>
 
                     <div class="flex flex-wrap items-center gap-2 text-[11px] text-gray-500 mb-3">
@@ -1117,38 +1470,39 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         async function approveOpp(code) {
             code = safeCode(code);
             if (!code) return;
-            if (!confirm(`هل أنت متأكد من رغبتك بالموافقة على التقديم للفرصة ${code}؟`)) return;
+            if (!await askConfirm(`هل أنت متأكد من رغبتك بالموافقة على التقديم للفرصة ${code}؟`)) return;
             try {
                 const res = await fetch(`/api/opportunities/${encodeURIComponent(code)}/approve`, { method: 'POST' });
                 const data = await res.json();
                 if (!res.ok) {
-                    alert(`⚠️ تعذر التقديم: ${data.detail || data.message || res.status}`);
+                    toast(`تعذر التقديم: ${data.detail || data.message || res.status}`, 'error');
                     return;
                 }
                 if (data.status === 'APPLIED_AUTOMATICALLY') {
-                    alert(`✅ تم التقديم بتأكيد رسمي. كود الفرصة: ${code}`);
+                    toast(`تم التقديم بتأكيد رسمي. كود الفرصة: ${code}`, 'success');
                 } else if (data.status === 'SUBMITTED_UNCONFIRMED') {
-                    alert(`⚠️ تم الضغط على Submit لكن لا يوجد تأكيد رسمي بعد. الحالة: ${data.status}. كود الفرصة: ${code}`);
+                    toast(`تم الضغط على Submit لكن لا يوجد تأكيد رسمي بعد. الحالة: ${data.status}.`, 'info');
                 } else if (data.status === 'PAUSED_NEEDS_USER_INPUT') {
-                    alert(`⏸️ الطلب متوقف بانتظار بيانات إضافية. كود الفرصة: ${code}`);
+                    toast(`الطلب متوقف بانتظار بيانات إضافية. كود الفرصة: ${code}`, 'info');
                 } else {
-                    alert(`ℹ️ الحالة: ${data.status}. لم يتم تأكيد أي تقديم. كود الفرصة: ${code}`);
+                    toast(`الحالة: ${data.status}. لم يتم تأكيد أي تقديم.`, 'info');
                 }
                 loadOpportunities();
             } catch (err) {
-                alert(`⚠️ حدث خطأ: ${err.message}`);
+                toast(`حدث خطأ: ${err.message}`, 'error');
             }
         }
 
         async function declineOpp(code) {
             code = safeCode(code);
             if (!code) return;
-            if (!confirm(`هل تريد استبعاد الفرصة ${code}؟`)) return;
+            if (!await askConfirm(`هل تريد استبعاد الفرصة ${code}؟`)) return;
             try {
                 await fetch(`/api/opportunities/${encodeURIComponent(code)}/decline`, { method: 'POST' });
+                toast('تم استبعاد الفرصة من القائمة.', 'success');
                 loadOpportunities();
             } catch (err) {
-                console.error(err);
+                toast(`تعذر استبعاد الفرصة: ${err.message}`, 'error');
             }
         }
 
@@ -1177,30 +1531,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
                 document.getElementById('modal-kit-approve-btn').onclick = () => { closeKitModal(); approveOpp(code); };
 
-                document.getElementById('kit-modal').classList.remove('hidden');
+                setModalOpen('kit-modal', true);
             } catch (err) {
-                alert(`تعذر جلب ملف التقديم: ${err.message}`);
+                toast(`تعذر جلب ملف التقديم: ${err.message}`, 'error');
             }
         }
 
         function closeKitModal() {
-            document.getElementById('kit-modal').classList.add('hidden');
+            setModalOpen('kit-modal', false);
         }
 
         function copyMotivationLetter() {
             const text = document.getElementById('modal-kit-essay').innerText;
             navigator.clipboard.writeText(text);
+            toast('تم نسخ خطاب الدافع.', 'success');
             const btnText = document.getElementById('copy-btn-text');
             btnText.innerText = "تم النسخ!";
             setTimeout(() => { btnText.innerText = "نسخ المقال"; }, 2000);
         }
 
         function openProfileModal() {
-            document.getElementById('profile-modal').classList.remove('hidden');
+            setModalOpen('profile-modal', true);
+            const firstField = document.getElementById('prof-name');
+            if (firstField) setTimeout(() => firstField.focus(), 60);
         }
 
         function closeProfileModal() {
-            document.getElementById('profile-modal').classList.add('hidden');
+            setModalOpen('profile-modal', false);
         }
 
         async function saveProfile(e) {
@@ -1216,6 +1573,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 activity_preferences: Array.from(
                     document.querySelectorAll('input[name="activity-pref"]:checked')
                 ).map(cb => cb.value).join(', '),
+                location_preference: document.getElementById('prof-location-pref').value,
+                availability_from: document.getElementById('prof-avail-from').value,
+                availability_to: document.getElementById('prof-avail-to').value,
                 github_url: document.getElementById('prof-github').value,
             };
 
@@ -1227,14 +1587,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 });
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok) {
-                    const detail = Array.isArray(data.detail) ? data.detail.join('\n') : (data.detail || 'تحقق من صحة البيانات.');
+                    const detail = Array.isArray(data.detail) ? data.detail.join('\\n') : (data.detail || 'تحقق من صحة البيانات.');
                     throw new Error(detail);
                 }
-                alert("✅ تم حفظ وتحديث بياناتك بنجاح!");
+                toast('تم حفظ وتحديث بياناتك بنجاح.', 'success');
                 closeProfileModal();
                 loadProfile();
             } catch (err) {
-                alert("⚠️ تعذر حفظ البيانات: " + err.message);
+                toast(`تعذر حفظ البيانات: ${err.message}`, 'error');
             }
         }
 
@@ -1244,10 +1604,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             try {
                 const res = await fetch('/api/audit', { method: 'POST' });
                 const data = await res.json();
-                alert(`اكتمل التدقيق! فرص مؤهلة جديدة: ${data.verified_eligible_count || 0}`);
+                toast(`اكتمل التدقيق! فرص مؤهلة جديدة: ${data.verified_eligible_count || 0}`, 'success');
                 loadOpportunities();
             } catch (err) {
-                alert("حدث خطأ أثناء التدقيق: " + err.message);
+                toast(`حدث خطأ أثناء التدقيق: ${err.message}`, 'error');
             } finally {
                 btn.innerHTML = `<i class="fa-solid fa-bolt"></i><span>تدقيق فوري</span>`;
             }
@@ -1258,9 +1618,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i><span>جاري السحب...</span>`;
             try {
                 const res = await fetch('/api/crawl', { method: 'POST' });
-                alert("تم إطلاق دورة السحب الآلية في الخلفية! سيتم تدقيق الفرص فور اكتمالها.");
+                toast('تم إطلاق دورة السحب الآلية في الخلفية. سيتم تدقيق الفرص فور اكتمالها.', 'success');
             } catch (err) {
-                alert("حدث خطأ أثناء السحب: " + err.message);
+                toast(`حدث خطأ أثناء السحب: ${err.message}`, 'error');
             } finally {
                 btn.innerHTML = `<i class="fa-solid fa-globe"></i><span>زحف الويب</span>`;
             }
@@ -1272,6 +1632,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 loadOpportunities();
             }, 300);
         }
+
+        // Close modals with Escape.
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closeKitModal();
+                closeProfileModal();
+            }
+        });
 
         // Initialize on load
         window.onload = initDashboard;

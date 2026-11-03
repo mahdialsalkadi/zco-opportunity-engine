@@ -20,10 +20,32 @@ os.environ.setdefault("TELEGRAM_ADMIN_CHAT_IDS", "12345")
 
 from database import OpportunityDatabase, OpportunityStatus, RawOpportunityRecord
 from engines_and_auditor import (
+    ApplicationPreflightResult,
     AutonomousApplicantEngine,
     BrowserSubmissionReceipt,
     CandidateMemoryVault,
 )
+
+
+@pytest.fixture(autouse=True)
+def _passing_preflight(monkeypatch):
+    """Keep state-machine tests offline; preflight has its own tests."""
+    import engines_and_auditor as engine_module
+
+    def _ok(opp, timeout=15):
+        return ApplicationPreflightResult(
+            ok=True,
+            apply_url=opp.get("apply_url", ""),
+            final_url=opp.get("apply_url", ""),
+            status_code=200,
+            page_title="Test Application",
+            form_count=1,
+            field_count=1,
+            required_field_count=0,
+            has_application_form=True,
+        )
+
+    monkeypatch.setattr(engine_module, "preflight_application", _ok)
 
 
 def _ingest_opp(db: OpportunityDatabase, **overrides) -> dict:
@@ -203,6 +225,111 @@ def test_duplicate_submission_is_blocked(tmp_path):
     assert duplicate["application_status"] == OpportunityStatus.APPLIED_AUTOMATICALLY
     assert filler.calls == 1
     assert "مسبق" in duplicate["notes"]
+
+
+def test_failed_preflight_blocks_submission_and_browser(tmp_path, monkeypatch):
+    import engines_and_auditor as engine_module
+
+    db = OpportunityDatabase(tmp_path / "preflight.db")
+    vault = CandidateMemoryVault(db)
+    applicant = AutonomousApplicantEngine(db, vault)
+    filler = _FakeFiller(_receipt("APPLIED_AUTOMATICALLY", "REF-SHOULD-NOT-BE-USED"))
+    applicant.browser_filler = filler
+    opp = _ingest_opp(db, required_form_fields_json='["full_name"]')
+
+    monkeypatch.setattr(
+        engine_module,
+        "preflight_application",
+        lambda opp, timeout=15: ApplicationPreflightResult(
+            ok=False,
+            apply_url=opp.get("apply_url", ""),
+            final_url="https://example.org/",
+            status_code=200,
+            form_count=0,
+            field_count=0,
+            redirected_to_homepage=True,
+            reason="apply URL redirects to the homepage and has no form",
+        ),
+    )
+
+    result = applicant.attempt_auto_application(opp, allow_submit=True)
+
+    assert result["application_status"] == OpportunityStatus.APPLICATION_FAILED
+    assert result["preflight"]["redirected_to_homepage"] is True
+    assert filler.calls == 0
+
+
+def test_unconfirmed_legacy_record_is_corrected_by_preflight(tmp_path, monkeypatch):
+    import engines_and_auditor as engine_module
+
+    db = OpportunityDatabase(tmp_path / "legacy_unconfirmed.db")
+    vault = CandidateMemoryVault(db)
+    applicant = AutonomousApplicantEngine(db, vault)
+    filler = _FakeFiller(_receipt("APPLIED_AUTOMATICALLY", "REF-SHOULD-NOT-BE-USED"))
+    applicant.browser_filler = filler
+    opp = _ingest_opp(db, required_form_fields_json='["full_name"]')
+    db.record_application_attempt(
+        opportunity_id=opp["id"],
+        opportunity_code=opp["opportunity_code"],
+        new_status=OpportunityStatus.SUBMITTED_UNCONFIRMED,
+        filled_payload={"full_name": "Test"},
+        missing_fields=[],
+        confirmation_ref="",
+    )
+    refreshed = db.get_opportunity_by_code(opp["opportunity_code"])
+    monkeypatch.setattr(
+        engine_module,
+        "preflight_application",
+        lambda opp, timeout=15: ApplicationPreflightResult(
+            ok=False,
+            apply_url=opp.get("apply_url", ""),
+            final_url="https://example.org/",
+            form_count=0,
+            field_count=0,
+            redirected_to_homepage=True,
+            reason="redirects to homepage without a form",
+        ),
+    )
+
+    result = applicant.attempt_auto_application(refreshed, allow_submit=True)
+
+    assert result["application_status"] == OpportunityStatus.APPLICATION_FAILED
+    assert filler.calls == 0
+
+
+def test_confirmed_application_survives_preflight_failure(tmp_path, monkeypatch):
+    import engines_and_auditor as engine_module
+
+    db = OpportunityDatabase(tmp_path / "confirmed_survives.db")
+    vault = CandidateMemoryVault(db)
+    applicant = AutonomousApplicantEngine(db, vault)
+    filler = _FakeFiller(_receipt("APPLIED_AUTOMATICALLY", "REF-REAL-0001"))
+    applicant.browser_filler = filler
+    opp = _ingest_opp(db, required_form_fields_json='["full_name"]')
+    db.record_application_attempt(
+        opportunity_id=opp["id"],
+        opportunity_code=opp["opportunity_code"],
+        new_status=OpportunityStatus.APPLIED_AUTOMATICALLY,
+        filled_payload={"full_name": "Test"},
+        missing_fields=[],
+        confirmation_ref="REF-REAL-0001",
+    )
+    refreshed = db.get_opportunity_by_code(opp["opportunity_code"])
+    monkeypatch.setattr(
+        engine_module,
+        "preflight_application",
+        lambda opp, timeout=15: ApplicationPreflightResult(
+            ok=False,
+            apply_url=opp.get("apply_url", ""),
+            reason="temporary network failure",
+        ),
+    )
+
+    result = applicant.attempt_auto_application(refreshed, allow_submit=True)
+
+    assert result["application_status"] == OpportunityStatus.APPLIED_AUTOMATICALLY
+    assert result["confirmation_ref"] == "REF-REAL-0001"
+    assert filler.calls == 0
 
 
 def test_cv_failure_blocks_submission(tmp_path, monkeypatch):

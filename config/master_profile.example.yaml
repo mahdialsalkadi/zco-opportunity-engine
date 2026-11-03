@@ -21,6 +21,9 @@ personal:
   dietary_preference: "Halal (حلال)"
   apparel_size: "M (Medium)"
   activity_preferences: "NATURE_ECO_CONSERVATION, OUTDOOR_LEADERSHIP_CAMPS"
+  location_preference: ""
+  availability_from: ""
+  availability_to: ""
   fitness_and_field:
     swimming: "Capable Swimmer"
     camping: "Passionate wilderness camper & outdoor trekker"

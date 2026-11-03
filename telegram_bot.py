@@ -188,7 +188,9 @@ def format_opportunity_card(opp: Dict[str, Any]) -> Tuple[str, InlineKeyboardMar
     is_my = bool(opp.get("is_inside_malaysia", 0))
     score = _esc(opp.get("match_score", 90))
     status = opp.get("status", "")
-    deadline = _esc(opp.get("deadline_iso", ""))
+    deadline = _esc(opp.get("deadline_iso", "")) or "غير محدد"
+    program_start = _esc(opp.get("program_start_iso", "")) or "غير محدد"
+    program_end = _esc(opp.get("program_end_iso", "")) or "غير محدد"
     apply_url = str(opp.get("apply_url", "") or "")
     if apply_url.startswith("file://"):
         apply_url = str(opp.get("source_url", "") or "")
@@ -249,7 +251,9 @@ def format_opportunity_card(opp: Dict[str, Any]) -> Tuple[str, InlineKeyboardMar
         f"📍 <b>الموقع:</b> {city} | {location_badge}\n"
         f"🎁 <b>التغطية المالية:</b> {cov_ar}\n"
         f"🎯 <b>نسبة التطابق:</b> <b>{score}%</b>\n"
-        f"📅 <b>آخر موعد:</b> <code>{deadline}</code> (ثقة {deadline_confidence_pct}%)\n"
+        f"📅 <b>آخر موعد للتسجيل:</b> <code>{deadline}</code> (ثقة {deadline_confidence_pct}%)\n"
+        f"🚀 <b>بداية الرحلة/البرنامج:</b> <code>{program_start}</code>\n"
+        f"🏁 <b>نهاية الرحلة/البرنامج:</b> <code>{program_end}</code>\n"
         f"🔎 <b>موثوقية المصدر:</b> <b>{source_confidence_pct}%</b>\n"
         f"📊 <b>الحالة:</b> {status_badge}\n"
         f"{cv_req_badge}\n\n"
@@ -641,7 +645,18 @@ class ZCOTelegramBotService:
             await self._deny_unauthorized(update)
             return
         chat_id = update.effective_chat.id
-        opps = self.db.get_verified_opportunities()
+        all_opps = self.db.get_verified_opportunities()
+        # Only present actionable opportunities (exclude failed preflight/dead links)
+        opps = [
+            o
+            for o in all_opps
+            if o.get("status")
+            in (
+                OpportunityStatus.READY_FOR_REVIEW,
+                OpportunityStatus.PAUSED_NEEDS_USER_INPUT,
+                OpportunityStatus.APPLIED_AUTOMATICALLY,
+            )
+        ]
 
         if not opps:
             msg = "لا توجد فرص مطابقة حالياً. اضغط /audit لتشغيل دورة تدقيق وبحث جديدة."
@@ -1001,7 +1016,14 @@ class ZCOTelegramBotService:
 
         for sub in admin_subscribers:
             chat_id = sub["chat_id"]
-            unnotified = self.db.get_unnotified_opportunities_for_chat(chat_id)
+            # Only broadcast opportunities that have passed Obscura preflight and are ready for review
+            unnotified = self.db.get_unnotified_opportunities_for_chat(
+                chat_id,
+                statuses=[
+                    OpportunityStatus.READY_FOR_REVIEW,
+                    OpportunityStatus.PAUSED_NEEDS_USER_INPUT,
+                ],
+            )
             for opp in unnotified:
                 text, markup = format_opportunity_card(opp)
                 try:

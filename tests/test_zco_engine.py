@@ -177,6 +177,23 @@ def test_candidate_memory_vault_learning(temp_db, tmp_path):
     assert saved_profile["learned_memory_vault"]["email_address"] == "mohammad.mahdi@graduate.utm.my"
 
 
+def test_program_date_range_extraction():
+    from async_crawler import extract_program_dates_iso
+
+    assert extract_program_dates_iso(
+        "Program runs June 1 - August 31, 2027 in Kuala Lumpur."
+    ) == ("2027-06-01", "2027-08-31")
+    assert extract_program_dates_iso(
+        "The camp runs 1 June to 31 August 2027."
+    ) == ("2027-06-01", "2027-08-31")
+    assert extract_program_dates_iso(
+        "Dates: 2027-06-01 — 2027-08-31"
+    ) == ("2027-06-01", "2027-08-31")
+    assert extract_program_dates_iso("June 1-5, 2027") == ("2027-06-01", "2027-06-05")
+    # A lone registration deadline must never be treated as a trip range.
+    assert extract_program_dates_iso("Deadline: 2027-05-01") == ("", "")
+
+
 def test_pdf_guidelines_extractor():
     pdf_path = paths.DOCS_DIR / "cv_mohammad_mahdi.pdf"
     if not pdf_path.exists():
@@ -241,6 +258,63 @@ def test_real_browser_form_auto_filler(tmp_path):
     assert pathlib.Path(receipt.pre_submit_screenshot_path).exists()
     assert pathlib.Path(receipt.post_submit_screenshot_path).exists()
     assert receipt.filled_dom_fields_count >= 8
+
+
+def test_submission_without_confirmation_is_unconfirmed(tmp_path):
+    page = tmp_path / "no_confirmation.html"
+    page.write_text(
+        """
+        <html><head><title>Application Form</title></head><body>
+          <form onsubmit="event.preventDefault();">
+            <label for="full_name">Full Name</label>
+            <input id="full_name" name="full_name" required />
+            <button type="submit">Submit</button>
+          </form>
+          <script>const fakeReceipt = "REF-SHOULD-NOT-COUNT";</script>
+        </body></html>
+        """,
+        encoding="utf-8",
+    )
+    filler = RealBrowserFormAutoFiller(screenshots_dir=tmp_path / "shots")
+    receipt = filler.fill_and_submit_application(
+        opportunity_code="TEST-NO-CONFIRM",
+        apply_url=f"file://{page.resolve()}",
+        vault_values={"full_name": "Mohammad Mahdi Alsalkadi"},
+        tailored_motivation_essay="A short statement.",
+        auto_click_submit=True,
+    )
+
+    assert receipt.status == "SUBMITTED_UNCONFIRMED"
+    assert receipt.confirmation_reference == ""
+
+
+def test_required_unmapped_field_blocks_submit(tmp_path):
+    page = tmp_path / "required_block.html"
+    page.write_text(
+        """
+        <html><head><title>Application Form</title></head><body>
+          <form>
+            <label for="full_name">Full Name</label>
+            <input id="full_name" name="full_name" required />
+            <label for="custom_question_xyz">Describe a difficult hike.</label>
+            <textarea id="custom_question_xyz" name="custom_question_xyz" required></textarea>
+            <button type="submit" id="submit">Submit</button>
+          </form>
+        </body></html>
+        """,
+        encoding="utf-8",
+    )
+    filler = RealBrowserFormAutoFiller(screenshots_dir=tmp_path / "shots2")
+    receipt = filler.fill_and_submit_application(
+        opportunity_code="TEST-REQUIRED-BLOCK",
+        apply_url=f"file://{page.resolve()}",
+        vault_values={"full_name": "Mohammad Mahdi Alsalkadi"},
+        tailored_motivation_essay="A short statement.",
+        auto_click_submit=True,
+    )
+
+    assert receipt.status == "READY_FOR_SUBMISSION"
+    assert "custom_question_xyz" in receipt.notes
 
 
 def test_full_controller_batch_and_dashboard(tmp_path):

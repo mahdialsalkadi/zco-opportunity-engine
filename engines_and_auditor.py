@@ -38,6 +38,7 @@ import pathlib
 import re
 import shutil
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
@@ -189,6 +190,18 @@ STANDARD_FIELD_CATALOG: Dict[str, Dict[str, str]] = {
         "label_ar": "تفضيلات أنواع الأنشطة (طبيعة، ذكاء اصطناعي أخضر، هاكاثونات، معسكرات، تطوع)",
         "category": "preferences",
     },
+    "location_preference": {
+        "label_ar": "تفضيل موقع الفرصة (داخل ماليزيا / خارج ماليزيا / الاثنان)",
+        "category": "preferences",
+    },
+    "availability_from": {
+        "label_ar": "تاريخ بداية الإتاحة للمشاركة في الأنشطة",
+        "category": "availability",
+    },
+    "availability_to": {
+        "label_ar": "تاريخ نهاية الإتاحة للمشاركة في الأنشطة",
+        "category": "availability",
+    },
     "swimming_and_outdoor_fitness": {
         "label_ar": "مستوى اللياقة الميدانية والقدرة على السباحة (للمعسكرات البحرية والغابات)",
         "category": "outdoor",
@@ -323,6 +336,9 @@ DOM_ATTRIBUTE_TO_VAULT_KEY_RULES: List[Tuple[str, List[str]]] = [
     ("dietary_preference", ["diet", "dietary", "food_preference", "meal_preference", "halal", "allergies"]),
     ("tshirt_and_gear_size", ["tshirt", "t-shirt", "shirt_size", "apparel_size", "gear_size"]),
     ("activity_preferences", ["activity_preference", "activity preferences", "preferred activities", "type of activities", "activity types", "نوع النشاط", "تفضيلات الأنشطة"]),
+    ("location_preference", ["location_preference", "location preference", "preferred location", "opportunity location preference", "تفضيل الموقع", "موقع الفرصة"]),
+    ("availability_from", ["availability_from", "available_from", "available from", "availability start", "متاح من"]),
+    ("availability_to", ["availability_to", "available_to", "available to", "availability end", "متاح حتى"]),
     ("swimming_and_outdoor_fitness", ["swimming", "fitness", "physical_condition", "outdoor_experience"]),
     ("emergency_contact_info", ["emergency", "next_of_kin", "emergency_contact"]),
     ("tailored_motivation_essay", ["motivation", "statement_of_purpose", "why_apply", "essay", "cover_letter", "رسالة الدافع"]),
@@ -655,6 +671,235 @@ class DeepPageAndPdfInspector:
         )
 
 
+@dataclasses.dataclass
+class ApplicationPreflightResult:
+    """Result of checking an application URL before launching a browser."""
+
+    ok: bool
+    apply_url: str
+    final_url: str = ""
+    status_code: int = 0
+    page_title: str = ""
+    form_count: int = 0
+    field_count: int = 0
+    required_field_count: int = 0
+    has_application_form: bool = False
+    redirected_to_homepage: bool = False
+    has_captcha_or_login_wall: bool = False
+    captcha_type: str = ""
+    required_vault_keys: List[str] = dataclasses.field(default_factory=list)
+    reason: str = ""
+    warnings: List[str] = dataclasses.field(default_factory=list)
+
+    def summary(self) -> Dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "apply_url": self.apply_url,
+            "final_url": self.final_url,
+            "status_code": self.status_code,
+            "page_title": self.page_title,
+            "form_count": self.form_count,
+            "field_count": self.field_count,
+            "required_field_count": self.required_field_count,
+            "has_application_form": self.has_application_form,
+            "redirected_to_homepage": self.redirected_to_homepage,
+            "has_captcha_or_login_wall": self.has_captcha_or_login_wall,
+            "captcha_type": self.captcha_type,
+            "required_vault_keys": self.required_vault_keys,
+            "reason": self.reason,
+            "warnings": self.warnings,
+        }
+
+
+def preflight_application_url(
+    apply_url: str,
+    deadline_iso: str = "",
+    expected_title: str = "",
+    timeout: int = 15,
+) -> ApplicationPreflightResult:
+    """Open an application URL and verify it is a real, fillable form.
+
+    This is deliberately a read-only check. It never clicks Submit and runs
+    before Chromium is launched, so a generic homepage, a news article, or a
+    dead link can no longer be recorded as a prepared or submitted application.
+    """
+    apply_url = str(apply_url or "").strip()
+    result = ApplicationPreflightResult(ok=False, apply_url=apply_url)
+
+    if not apply_url:
+        result.reason = "لا يوجد رابط تقديم محفوظ لهذه الفرصة."
+        return result
+
+    parsed = urllib.parse.urlparse(apply_url)
+    if parsed.scheme.lower() not in ("http", "https", "file"):
+        result.reason = f"رابط التقديم يستخدم مخططاً غير مدعوم: {parsed.scheme or 'بدون مخطط'}"
+        return result
+
+    if deadline_iso:
+        try:
+            deadline = dt.date.fromisoformat(str(deadline_iso)[:10])
+            if deadline < dt.date.today():
+                result.reason = f"انتهى آخر موعد للتسجيل في {deadline.isoformat()}؛ لن يتم تقديم طلب جديد."
+                return result
+        except ValueError:
+            pass
+
+    html_text = ""
+    final_url = apply_url
+    try:
+        if parsed.scheme.lower() == "file":
+            local_path = pathlib.Path(urllib.parse.unquote(parsed.path))
+            if not local_path.is_file():
+                result.reason = f"ملف الاستمارة المحلي غير موجود: {local_path}"
+                return result
+            html_text = local_path.read_text(encoding="utf-8", errors="replace")
+            result.status_code = 200
+            result.final_url = apply_url
+        else:
+            is_local = any(
+                parsed.netloc.startswith(h)
+                for h in ("127.0.0.1", "localhost", "0.0.0.0")
+            )
+            # Use Obscura headless browser for live external portals (JS rendering + anti-bot stealth)
+            if not is_local:
+                try:
+                    import obscura_engine
+
+                    if obscura_engine.is_obscura_available():
+                        rendered = obscura_engine.fetch_rendered_html(apply_url, timeout=timeout)
+                        if rendered and len(rendered.strip()) > 50:
+                            html_text = rendered
+                            result.status_code = 200
+                            result.final_url = apply_url
+                except Exception as exc:
+                    logger.debug("Obscura preflight fetch failed for %s: %s", apply_url, exc)
+
+            if not html_text:
+                req = urllib.request.Request(
+                    apply_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; ZCO-ApplicationPreflight/1.0)",
+                        "Accept": "text/html,application/xhtml+xml",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    result.status_code = int(getattr(resp, "status", 200) or 200)
+                    final_url = resp.geturl() or apply_url
+                    charset = resp.headers.get_content_charset() or "utf-8"
+                    html_text = resp.read(2_000_000).decode(charset, errors="replace")
+                result.final_url = final_url
+    except urllib.error.HTTPError as exc:
+        result.status_code = int(exc.code)
+        result.reason = f"رابط التقديم أعاد HTTP {exc.code}."
+        return result
+    except Exception as exc:
+        result.reason = f"تعذر فتح رابط التقديم: {exc}"
+        return result
+
+    if result.status_code >= 400:
+        result.reason = f"رابط التقديم أعاد HTTP {result.status_code}."
+        return result
+
+    inspection = DeepPageAndPdfInspector.inspect_html_content(
+        html_text=html_text,
+        base_url=final_url,
+        resolve_linked_pdfs=False,
+    )
+    soup = BeautifulSoup(html_text, "html.parser")
+    visible_text = inspection.extracted_full_text or ""
+
+    result.page_title = inspection.page_title
+    result.form_count = len(soup.find_all("form"))
+    result.field_count = len(inspection.discovered_fields)
+    result.required_field_count = sum(1 for f in inspection.discovered_fields if f.required)
+    result.required_vault_keys = list(inspection.required_vault_keys)
+    result.has_captcha_or_login_wall = inspection.has_captcha_or_login_wall
+    result.captcha_type = inspection.captcha_type
+
+    orig_path = urllib.parse.urlparse(apply_url).path.rstrip("/") or "/"
+    final_path = urllib.parse.urlparse(final_url).path.rstrip("/") or "/"
+    result.redirected_to_homepage = orig_path != "/" and final_path == "/"
+
+    has_password_field = bool(soup.find("input", {"type": "password"}))
+    embedded_form_urls = [
+        str(iframe.get("src") or "")
+        for iframe in soup.find_all("iframe")
+        if any(
+            host in str(iframe.get("src") or "").lower()
+            for host in (
+                "docs.google.com/forms",
+                "forms.office.com",
+                "tally.so",
+                "typeform.com",
+                "airtable.com",
+            )
+        )
+    ]
+
+    if has_password_field:
+        result.has_captcha_or_login_wall = True
+        result.captcha_type = result.captcha_type or "Login wall"
+        result.reason = "صفحة التقديم تتطلب تسجيل دخول؛ لا يمكن تقديم النموذج تلقائياً بأمان."
+        return result
+
+    if embedded_form_urls and result.field_count == 0:
+        result.reason = (
+            "الاستمارة مدمجة داخل iframe خارجي ولا يمكن تعبئتها بأمان من هذه الصفحة. "
+            "افتح رابط الاستمارة المباشر أولاً."
+        )
+        return result
+
+    if result.field_count == 0:
+        if result.redirected_to_homepage:
+            result.reason = (
+                "رابط التقديم يعيد التوجيه إلى الصفحة الرئيسية ولا يحتوي على أي استمارة تقديم. "
+                "لم يتم فتح المتصفح ولم يتم تسجيل أي تقديم."
+            )
+        else:
+            result.reason = (
+                "الصفحة لا تحتوي على أي حقول استمارة تفاعلية (مقال إخباري أو صفحة تعريفية). "
+                "لم يتم فتح المتصفح ولم يتم تسجيل أي تقديم."
+            )
+        if result.page_title:
+            result.reason += f" عنوان الصفحة: {result.page_title}"
+        return result
+
+    if result.has_captcha_or_login_wall:
+        result.warnings.append(
+            f"الصفحة تتضمن حاجز {result.captcha_type or 'CAPTCHA/تسجيل دخول'}؛ سيتم التوقف قبل الضغط على Submit."
+        )
+
+    if not soup.find_all("button") and not soup.find_all("input", {"type": "submit"}):
+        result.warnings.append("لم يتم العثور على زر Submit واضح في الصفحة.")
+
+    expected_tokens = [
+        token.lower()
+        for token in re.findall(r"[A-Za-z]{4,}", expected_title or "")
+        if token.lower() not in {"with", "from", "this", "that", "program", "fully", "funded", "2027", "2026"}
+    ]
+    if expected_tokens:
+        page_haystack = f"{result.page_title} {final_url} {visible_text[:3000]}".lower()
+        if not any(token in page_haystack for token in expected_tokens[:6]):
+            result.warnings.append(
+                "عنوان الصفحة ورابطها لا يذكران اسم الفرصة؛ تحقق يدوياً من أنها صفحة التقديم الصحيحة."
+            )
+
+    result.has_application_form = True
+    result.ok = True
+    result.reason = "تم التحقق من وجود استمارة تقديم تفاعلية."
+    return result
+
+
+def preflight_application(opp: Dict[str, Any], timeout: int = 15) -> ApplicationPreflightResult:
+    """Convenience wrapper around :func:`preflight_application_url` for a DB row."""
+    return preflight_application_url(
+        apply_url=str(opp.get("apply_url") or ""),
+        deadline_iso=str(opp.get("deadline_iso") or ""),
+        expected_title=str(opp.get("title") or ""),
+        timeout=timeout,
+    )
+
+
 class RealBrowserFormAutoFiller:
     """
     Uses real Headless Chromium (`/usr/bin/chromium` + `/usr/bin/chromedriver` via Selenium)
@@ -734,15 +979,35 @@ class RealBrowserFormAutoFiller:
         vault_values: Dict[str, str],
         tailored_motivation_essay: str,
         auto_click_submit: bool = True,
+        engine: str = "auto",
     ) -> BrowserSubmissionReceipt:
         from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import Select
+        from selenium.webdriver.support.ui import Select, WebDriverWait
 
         allowed_prefixes = ("http://", "https://", "file://")
         if not str(apply_url or "").startswith(allowed_prefixes):
             raise ValueError(
                 f"Refusing to open unsupported application URL scheme: {apply_url!r}"
             )
+
+        # Use Obscura engine for external live portals when available
+        if engine in ("auto", "obscura") and apply_url.startswith(("http://", "https://")):
+            try:
+                import obscura_engine
+
+                if obscura_engine.is_obscura_available():
+                    return obscura_engine.obscura_fill_and_submit(
+                        opportunity_code=opportunity_code,
+                        apply_url=apply_url,
+                        vault_values=vault_values,
+                        tailored_motivation_essay=tailored_motivation_essay,
+                        screenshots_dir=self.screenshots_dir,
+                        auto_click_submit=auto_click_submit,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Obscura submission attempt failed, falling back to Chromium: %s", exc
+                )
 
         payload = dict(vault_values)
         payload["tailored_motivation_essay"] = tailored_motivation_essay
@@ -760,6 +1025,7 @@ class RealBrowserFormAutoFiller:
 
             filled_count = 0
             uploaded_files_count = 0
+            unfilled_required_labels: List[str] = []
 
             for field in inspection.discovered_fields:
                 el = None
@@ -807,6 +1073,8 @@ class RealBrowserFormAutoFiller:
                         pass
 
                 if el is None:
+                    if field.required:
+                        unfilled_required_labels.append(field.label_text or field.dom_name or field.dom_id or field.input_type)
                     continue
 
                 if field.mapped_vault_key == "__auto_agree_checkbox__":
@@ -817,6 +1085,8 @@ class RealBrowserFormAutoFiller:
 
                 val = payload.get(field.mapped_vault_key, "")
                 if not val:
+                    if field.required:
+                        unfilled_required_labels.append(field.label_text or field.dom_name or field.dom_id or field.input_type)
                     continue
 
                 if field.tag_name == "select":
@@ -829,9 +1099,10 @@ class RealBrowserFormAutoFiller:
                             sel.select_by_visible_text(opt.text)
                             matched_opt = True
                             break
-                    if not matched_opt and len(sel.options) > 1:
-                        sel.select_by_index(1)
-                    filled_count += 1
+                    if matched_opt:
+                        filled_count += 1
+                    elif field.required:
+                        unfilled_required_labels.append(field.label_text or field.dom_name or field.dom_id or "select")
 
                 elif field.input_type == "file":
                     file_path = pathlib.Path(val).resolve()
@@ -839,14 +1110,37 @@ class RealBrowserFormAutoFiller:
                         el.send_keys(str(file_path))
                         uploaded_files_count += 1
                         filled_count += 1
+                    elif field.required:
+                        unfilled_required_labels.append(field.label_text or field.dom_name or "file upload")
 
-                elif field.input_type in ("checkbox", "radio"):
-                    try:
-                        if not el.is_selected():
-                            el.click()
-                    except Exception:
+                elif field.input_type == "radio":
+                    group = driver.find_elements(By.NAME, field.dom_name) if field.dom_name else [el]
+                    target = None
+                    for candidate in group:
+                        candidate_label = " ".join(
+                            filter(None, [
+                                candidate.get_attribute("aria-label"),
+                                candidate.get_attribute("value"),
+                                candidate.get_attribute("id"),
+                            ])
+                        ).lower()
+                        if val.lower() in candidate_label or candidate_label in val.lower():
+                            target = candidate
+                            break
+                    if target is not None:
+                        if not target.is_selected():
+                            target.click()
+                        filled_count += 1
+                    elif field.required:
+                        unfilled_required_labels.append(field.label_text or field.dom_name or "radio")
+
+                elif field.input_type == "checkbox":
+                    should_check = val.strip().lower() in {"1", "true", "yes", "y", "agree", "confirmed"}
+                    if should_check and not el.is_selected():
                         el.click()
-                    filled_count += 1
+                        filled_count += 1
+                    elif field.required and not el.is_selected():
+                        unfilled_required_labels.append(field.label_text or field.dom_name or "checkbox")
 
                 else:
                     el.clear()
@@ -868,6 +1162,38 @@ class RealBrowserFormAutoFiller:
                     notes=f"تم تعبئة {filled_count} حقلاً بالكامل والتوقف عند حاجز {inspection.captcha_type} لتأكيده بضغطة واحدة.",
                 )
 
+            try:
+                empty_required = driver.execute_script(
+                    """
+                    return Array.from(document.querySelectorAll('[required]')).filter((el) => {
+                        if (el.type === 'checkbox' || el.type === 'radio') return !el.checked;
+                        if (el.type === 'file') return !el.files || el.files.length === 0;
+                        return !String(el.value || '').trim();
+                    }).map((el) => el.getAttribute('aria-label') || el.getAttribute('name') || el.getAttribute('id') || el.type);
+                    """
+                ) or []
+                for required_name in empty_required:
+                    required_name = str(required_name or "").strip()
+                    if required_name and required_name not in unfilled_required_labels:
+                        unfilled_required_labels.append(required_name)
+            except Exception:
+                pass
+
+            if unfilled_required_labels:
+                return BrowserSubmissionReceipt(
+                    status="READY_FOR_SUBMISSION",
+                    confirmation_reference="",
+                    confirmation_page_text="",
+                    pre_submit_screenshot_path=str(pre_shot_path),
+                    post_submit_screenshot_path="",
+                    filled_dom_fields_count=filled_count,
+                    uploaded_files_count=uploaded_files_count,
+                    notes=(
+                        "لم يتم الضغط على Submit لأن الحقول المطلوبة التالية بقيت فارغة: "
+                        + ", ".join(unfilled_required_labels[:8])
+                    ),
+                )
+
             if filled_count == 0:
                 return BrowserSubmissionReceipt(
                     status="READY_FOR_SUBMISSION",
@@ -877,7 +1203,7 @@ class RealBrowserFormAutoFiller:
                     post_submit_screenshot_path="",
                     filled_dom_fields_count=0,
                     uploaded_files_count=0,
-                    notes="تم فتح الرابط الحقيقي عبر المتصفح: الصفحة عبارة عن مقال إخباري أو بوابة تعريفية لا تحتوي على حقول استمارة تفاعلية مباشرة. تم تجهيز طرد التقديم كاملاً (السيرة الذاتية وخطاب الدافع) بانتظار التقديم المباشر.",
+                    notes="تم فتح الرابط الحقيقي عبر المتصفح: الصفحة عبارة عن مقال إخباري أو بوابة تعريفية لا تحتوي على حقول استمارة تفاعلية مباشرة. لم يتم الضغط على Submit.",
                 )
 
             if not auto_click_submit:
@@ -896,6 +1222,12 @@ class RealBrowserFormAutoFiller:
             confirmation_text = ""
             confirmation_ref = ""
             submit_clicked = False
+            notes = ""
+            old_url = driver.current_url
+            try:
+                old_body = driver.find_element(By.TAG_NAME, "body").text or ""
+            except Exception:
+                old_body = ""
 
             submit_buttons = driver.find_elements(
                 By.CSS_SELECTOR,
@@ -918,30 +1250,95 @@ class RealBrowserFormAutoFiller:
                         break
 
             if submit_buttons:
-                submit_buttons[0].click()
-                submit_clicked = True
-                time.sleep(0.4)
+                submit_button = submit_buttons[0]
+                try:
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", submit_button)
+                    WebDriverWait(driver, 5).until(
+                        lambda d: submit_button.is_displayed() and submit_button.is_enabled()
+                    )
+                    driver.execute_script("arguments[0].click();", submit_button)
+                    submit_clicked = True
+                    try:
+                        WebDriverWait(driver, 12).until(
+                            lambda d: d.current_url != old_url
+                            or ((d.find_element(By.TAG_NAME, "body").text or "")[:2000] != old_body[:2000])
+                        )
+                    except Exception:
+                        pass
+                    time.sleep(0.4)
+                except Exception as exc:
+                    notes = f"تعذر الضغط على زر Submit: {exc}"
 
             driver.save_screenshot(str(post_shot_path))
             body_el = driver.find_element(By.TAG_NAME, "body")
             full_body_text = (body_el.text or "").strip()
-            ref_match = re.search(r"(?:REF|SUB|APP|CONF)-[A-Z0-9-]+", full_body_text) or re.search(
-                r"(?:REF|SUB|APP|CONF)-[A-Z0-9-]+", driver.page_source
+            body_lower = full_body_text.lower()
+            current_url_lower = (driver.current_url or "").lower()
+
+            success_markers = (
+                "thank you",
+                "application received",
+                "successfully submitted",
+                "submission received",
+                "we have received",
+                "confirmation",
+                "تم استلام",
+                "تم إرسال",
+                "تم التقديم",
+                "تم التسجيل",
             )
+            error_markers = (
+                "please fill",
+                "is required",
+                "field is required",
+                "invalid input",
+                "something went wrong",
+                "هذا الحقل مطلوب",
+                "يرجى تعبئة",
+            )
+            success_found = any(marker in body_lower for marker in success_markers) or any(
+                marker in current_url_lower
+                for marker in ("/thanks", "/thank-you", "/success", "/submitted", "/confirmation")
+            )
+            validation_failed = any(marker in body_lower for marker in error_markers) and not success_found
+
+            ref_match = re.search(
+                r"\b((?:REF|SUB|APP|CONF|RECEIPT)[-_][A-Z0-9][A-Z0-9_-]{4,})\b",
+                full_body_text,
+                re.IGNORECASE,
+            )
+            if not ref_match:
+                ref_match = re.search(
+                    r"(?:reference|receipt|application\s*(?:id|number)|confirmation(?:\s*(?:id|number|code))?)\s*[:#-]?\s*([A-Z0-9][A-Z0-9_-]{5,})",
+                    full_body_text,
+                    re.IGNORECASE,
+                )
             if ref_match:
-                confirmation_ref = ref_match.group(0)
+                confirmation_ref = (ref_match.group(1) or ref_match.group(0)).strip()
             confirmation_text = full_body_text[:1000]
 
             if not submit_clicked:
                 status = "READY_FOR_SUBMISSION"
-                notes = "تمت تعبئة الاستمارة، لكن لم يتم العثور على زر Submit موثوق. راجع الصورة وأرسل الطلب يدوياً."
-            elif confirmation_ref:
+                notes = notes or "تمت تعبئة الاستمارة، لكن لم يتم العثور على زر Submit موثوق. راجع الصورة وأرسل الطلب يدوياً."
+            elif validation_failed:
+                status = "READY_FOR_SUBMISSION"
+                notes = (
+                    "تم الضغط على Submit لكن الصفحة أظهرت رسالة تحقق أو رفض. "
+                    "لم يتم اعتبار الطلب مقدماً؛ راجع الصورة وأكمل الحقول الناقصة."
+                )
+            elif confirmation_ref and success_found:
                 status = "APPLIED_AUTOMATICALLY"
-                notes = "تم فتح المتصفح الحقيقي وتعبئة الحقول والضغط على Submit مع رصد مرجع تأكيد."
+                notes = "تم فتح المتصفح الحقيقي وتعبئة الحقول والضغط على Submit مع رصد مرجع تأكيد في نص الصفحة."
+            elif success_found:
+                status = "SUBMITTED_UNCONFIRMED"
+                notes = (
+                    "تم الضغط على Submit وظهرت علامة نجاح، لكن لم يتم رصد مرجع تأكيد واضح. "
+                    "لا تعتبر الطلب مؤكداً حتى تصل رسالة/إيصال رسمي من الجهة المنظمة."
+                )
             else:
                 status = "SUBMITTED_UNCONFIRMED"
                 notes = (
-                    "تم الضغط على Submit، لكن الصفحة لم تُظهر مرجع تأكيد واضحاً. "
+                    "تم الضغط على Submit، لكن الصفحة لم تُظهر تأكيداً واضحاً. "
                     "لا تعتبر الطلب مؤكداً حتى تصل رسالة/إيصال رسمي من الجهة المنظمة."
                 )
 
@@ -1239,6 +1636,12 @@ def load_seed_from_master_profile(config_dir: pathlib.Path) -> Dict[str, str]:
                 activity_prefs = ", ".join(str(item) for item in activity_prefs)
             if activity_prefs:
                 seed["activity_preferences"] = str(activity_prefs)
+            if p.get("location_preference"):
+                seed["location_preference"] = p["location_preference"]
+            if p.get("availability_from"):
+                seed["availability_from"] = str(p["availability_from"])
+            if p.get("availability_to"):
+                seed["availability_to"] = str(p["availability_to"])
             if p.get("github_url"):
                 seed["github_or_portfolio_url"] = p["github_url"]
             if edu.get("institution"):
@@ -1454,15 +1857,17 @@ class AutonomousApplicantEngine:
         opp_code = opp.get("opportunity_code") or f"ID-{opp.get('id', 'opp')}"
         q_key = f"motivation_statement_{opp_code}"
 
-        # 1. Check if an essay for this opportunity already exists in learned_qa_bank
-        existing_qa = self.db.get_all_learned_qa()
-        if q_key in existing_qa:
-            self.db.increment_qa_reuse(q_key)
-            return existing_qa[q_key]["answer_text"]
+        # 1. Load verified profile first so cached essays can be checked against it.
+        try:
+            from typst_agentic_cv_engine import MasterProfileManager
 
-        # 2. Check for LLM generation via Gemini if API key configured
-        essay_text = ""
-        gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+            profile_data = MasterProfileManager().data
+        except Exception as exc:
+            logger.warning("Could not load master profile for essay synthesis: %s", exc)
+            try:
+                profile_data = PortfolioManager().data
+            except Exception:
+                profile_data = {}
 
         title = opp.get("title", "International Academic Opportunity")
         organizer = opp.get("organizer", "the Host Organization")
@@ -1471,55 +1876,60 @@ class AutonomousApplicantEngine:
         city = opp.get("location_city", "Host City")
         country = opp.get("location_country", "Host Country")
 
+        from writing_rules import (
+            build_motivation_letter,
+            build_motivation_prompt,
+            validate_motivation_essay,
+        )
+
+        existing_qa = self.db.get_all_learned_qa()
+        if q_key in existing_qa:
+            cached_essay = existing_qa[q_key]["answer_text"]
+            cached_check = validate_motivation_essay(cached_essay, profile_data, opp)
+            if cached_check["ok"]:
+                self.db.increment_qa_reuse(q_key)
+                return cached_essay
+            logger.info(
+                "Regenerating stale cached essay for %s: %s",
+                opp_code,
+                cached_check["issues"],
+            )
+
+        # 2. Optional LLM pass. Its output is accepted only if it passes the
+        # same style and fact-grounding checks as the deterministic writer.
+        essay_text = ""
+        gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip()
         if gemini_api_key:
             try:
-                prompt = (
-                    f"Write a rigorous, authentic 250-300 word Statement of Purpose / Motivation Essay for Mohammad Mahdi Alsalkadi "
-                    f"applying for '{title}' organized by '{organizer}' in {city}, {country} (Track: {track}).\n\n"
-                    f"Opportunity Details:\n{desc[:1000]}\n\n"
-                    f"Strict Candidate Ground Truth:\n"
-                    f"- 1st-Year Undergraduate pursuing Bachelor of Computer Science (Artificial Intelligence) with Honours at Universiti Teknologi Malaysia (UTM).\n"
-                    f"- CGPA: 3.53 / 4.00.\n"
-                    f"- Syrian national residing in Malaysia under international student visa (UTM).\n"
-                    f"- Technical skills: Python, PyTorch deep learning, C++, algorithms, ZCO-Hunter agentic system.\n"
-                    f"- Field competencies: Outdoor trekking, tropical resilience, swimming.\n\n"
-                    f"Rules:\n"
-                    f"- Exactly 250-300 words in 3-4 cohesive paragraphs.\n"
-                    f"- Never fabricate GPA, awards, or past jobs.\n"
-                    f"- Never include internal student IDs, t-shirt sizes, or passport numbers.\n"
-                    f"- Tone: academic, humble, ambitious, technically grounded."
-                )
+                prompt = build_motivation_prompt(opp, profile_data)
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_api_key}"
                 req_data = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
                 req = urllib.request.Request(url, data=req_data, headers={"Content-Type": "application/json"})
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     resp_data = json.loads(resp.read().decode("utf-8"))
-                    essay_text = resp_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    candidate_essay = resp_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                candidate_check = validate_motivation_essay(candidate_essay, profile_data, opp)
+                if candidate_check["ok"]:
+                    essay_text = candidate_essay
+                else:
+                    logger.info(
+                        "Rejected LLM essay for %s: %s",
+                        opp_code,
+                        candidate_check["issues"],
+                    )
             except Exception as exc:
                 logger.debug("Gemini LLM essay synthesis fallback: %s", exc)
 
-        # 3. Deterministic high-quality 4-paragraph fallback if no LLM or LLM failed
-        if not essay_text or len(essay_text.split()) < 150:
-            try:
-                pm = PortfolioManager()
-                essay_text = pm.synthesize_tailored_motivation_letter(opp)
-            except Exception:
-                # Candidate strict directive: Never mention Kuwait unless explicitly mandated by the opportunity!
-                corpus_kw = f"{title} {desc} {opp.get('raw_terms_text', '')}".lower()
-                is_gcc_mandated = any(k in corpus_kw for k in ["kuwait", "gcc", "gulf countries", "الكويت", "الخليج", "مجلس التعاون"])
-                residency_clause = (
-                    f"with valid residency in {known.get('secondary_residency_country', 'Kuwait')}, "
-                    if is_gcc_mandated
-                    else ""
-                )
-                essay_text = (
-                    f"Application Statement for {title} ({organizer}):\n\n"
-                    f"As a {known.get('age', '20')}-year-old {known.get('nationality', 'Syrian')} student "
-                    f"pursuing a {known.get('degree_and_major', 'B.Sc. in Artificial Intelligence')} "
-                    f"({known.get('academic_year', 'Year 1')}) at {known.get('university_name', 'Universiti Teknologi Malaysia')} "
-                    f"{residency_clause}I am eager to "
-                    f"contribute actively to {title} in {city}, {country}. My background bridges practical programming "
-                    f"in Python and PyTorch with a dedication to environmental resilience and community leadership."
+        # 3. Deterministic grounded writer. This is the normal path when no
+        # API key is configured and the fallback when an LLM output fails.
+        if not essay_text:
+            essay_text = build_motivation_letter(opp, profile_data)
+            final_check = validate_motivation_essay(essay_text, profile_data, opp)
+            if not final_check["ok"]:
+                logger.warning(
+                    "Grounded essay still has style issues for %s: %s",
+                    opp_code,
+                    final_check["issues"],
                 )
 
         # 4. Save to persistent learned_qa_bank
@@ -1557,10 +1967,48 @@ class AutonomousApplicantEngine:
         opp_code = opp.get("opportunity_code") or f"ID-{opp_id}"
         apply_url = opp.get("apply_url", "")
 
+        current_status = opp.get("status")
+        preflight_result = None
+        # Run the read-only check before the duplicate guard for unconfirmed
+        # rows: an old synthetic "submitted" record may point at a homepage and
+        # should be corrected to APPLICATION_FAILED. A genuinely confirmed
+        # application is never downgraded by a transient network error.
+        needs_preflight = not (
+            current_status == OpportunityStatus.APPLIED_AUTOMATICALLY
+            and not force_resubmit
+        )
+        if needs_preflight:
+            preflight_result = preflight_application(opp)
+            if not preflight_result.ok:
+                notes = f"تم إيقاف التقديم قبل فتح المتصفح: {preflight_result.reason}"
+                self.db.record_application_attempt(
+                    opportunity_id=opp_id,
+                    opportunity_code=opp_code,
+                    new_status=OpportunityStatus.APPLICATION_FAILED,
+                    filled_payload={
+                        "apply_url": apply_url,
+                        "preflight": preflight_result.summary(),
+                        "prepared_timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+                    },
+                    missing_fields=[],
+                    confirmation_ref="",
+                    notes=notes,
+                )
+                return {
+                    "opportunity_code": opp_code,
+                    "title": opp.get("title", ""),
+                    "application_status": OpportunityStatus.APPLICATION_FAILED,
+                    "filled_fields_count": 0,
+                    "missing_fields": [],
+                    "confirmation_ref": "",
+                    "notes": notes,
+                    "preflight": preflight_result.summary(),
+                }
+
         if (
             allow_submit
             and not force_resubmit
-            and opp.get("status")
+            and current_status
             in (
                 OpportunityStatus.APPLIED_AUTOMATICALLY,
                 OpportunityStatus.SUBMITTED_UNCONFIRMED,
@@ -1574,11 +2022,12 @@ class AutonomousApplicantEngine:
             return {
                 "opportunity_code": opp_code,
                 "title": opp.get("title", ""),
-                "application_status": opp.get("status"),
+                "application_status": current_status,
                 "filled_fields_count": 0,
                 "missing_fields": [],
                 "confirmation_ref": receipt.get("confirmation_ref", ""),
                 "notes": notes,
+                "preflight": preflight_result.summary() if preflight_result else None,
             }
 
         if apply_url.startswith("file://"):
@@ -1690,6 +2139,9 @@ class AutonomousApplicantEngine:
         filled_payload["tailored_motivation_essay"] = essay
         filled_payload["prepared_via"] = "ZCO-Engine Real Chromium Applicant"
         filled_payload["prepared_timestamp_utc"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        filled_payload["preflight"] = preflight_result.summary()
+        if preflight_result.warnings:
+            logger.warning("Preflight warnings for %s: %s", opp_code, preflight_result.warnings)
 
         if not allow_submit:
             notes = (

@@ -80,6 +80,20 @@ DEFAULT_SOURCES_REGISTRY: List[Dict[str, Any]] = [
         "rss_url": "https://opportunitiescorners.com/feed/",
     },
     {
+        "feed_id": "opportunities_corners_internships",
+        "name": "Opportunities Corners (Global Fully-Funded Research Internships)",
+        "track_category": "CORE_AI_HACKATHONS",
+        "is_inside_malaysia": False,
+        "rss_url": "https://opportunitiescorners.com/category/internships/feed/",
+    },
+    {
+        "feed_id": "opportunities_corners_fellowships",
+        "name": "Opportunities Corners (International Summer Fellowships)",
+        "track_category": "GREEN_AI_CLIMATE_TECH",
+        "is_inside_malaysia": False,
+        "rss_url": "https://opportunitiescorners.com/category/fellowships/feed/",
+    },
+    {
         "feed_id": "oya_opportunities",
         "name": "OYA Opportunities (Fully-Funded Youth Exchange & Conferences)",
         "track_category": "GREEN_AI_CLIMATE_TECH",
@@ -94,6 +108,13 @@ DEFAULT_SOURCES_REGISTRY: List[Dict[str, Any]] = [
         "rss_url": "https://scholarshiproar.com/feed/",
     },
     {
+        "feed_id": "scholarship_roar_internships",
+        "name": "Scholarship Roar (International Undergraduate Internships)",
+        "track_category": "CORE_AI_HACKATHONS",
+        "is_inside_malaysia": False,
+        "rss_url": "https://scholarshiproar.com/category/internships/feed/",
+    },
+    {
         "feed_id": "opportunities_for_africans_global_south",
         "name": "Opportunities for Global South, Arab & MENA Youth",
         "track_category": "MENA_GCC_ASEAN_SPECIAL",
@@ -106,6 +127,41 @@ DEFAULT_SOURCES_REGISTRY: List[Dict[str, Any]] = [
         "track_category": "COMMUNITY_VOLUNTEERING_EXCHANGE",
         "is_inside_malaysia": False,
         "rss_url": "https://www.scholars4dev.com/feed/",
+    },
+    {
+        "feed_id": "opportunities_circle",
+        "name": "Opportunities Circle (Fully Funded Scholarships, Youth Summits & Internships)",
+        "track_category": "OUTDOOR_LEADERSHIP_CAMPS",
+        "is_inside_malaysia": False,
+        "rss_url": "https://opportunitiescircle.com/feed/",
+    },
+    {
+        "feed_id": "scholarships_corner",
+        "name": "Scholarships Corner (Global Fully Funded Student Programs)",
+        "track_category": "CORE_AI_HACKATHONS",
+        "is_inside_malaysia": False,
+        "rss_url": "https://scholarshipscorner.website/feed/",
+    },
+    {
+        "feed_id": "afterschool_africa",
+        "name": "AfterSchoolAfrica (Global South Scholarships & Competitions)",
+        "track_category": "MENA_GCC_ASEAN_SPECIAL",
+        "is_inside_malaysia": False,
+        "rss_url": "https://www.afterschoolafrica.com/feed/",
+    },
+    {
+        "feed_id": "asean_youth_network",
+        "name": "ASEAN Youth Network (Southeast Asia Student Mobility & Camps)",
+        "track_category": "MENA_GCC_ASEAN_SPECIAL",
+        "is_inside_malaysia": True,
+        "rss_url": "https://aseanyouth.net/feed/",
+    },
+    {
+        "feed_id": "opportunity_cell",
+        "name": "Opportunity Cell (Workshops, Conferences, Hackathons & Competitions)",
+        "track_category": "CORE_AI_HACKATHONS",
+        "is_inside_malaysia": False,
+        "rss_url": "https://opportunitycell.com/feed/",
     },
 ]
 
@@ -388,6 +444,93 @@ def extract_deadline_iso(text: str) -> str:
     except ValueError:
         return ""
 
+_MONTH_NUMBERS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+_MONTH_PATTERN = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+)
+_RANGE_SEPARATOR = r"(?:-|–|—|\bto\b|\buntil\b|→)"
+
+
+def _month_day_iso(month_name: str, day: str, year: str) -> str:
+    month_number = _MONTH_NUMBERS.get(month_name.lower()[:3], 0)
+    try:
+        return dt.date(int(year), month_number, int(day)).isoformat()
+    except ValueError:
+        return ""
+
+
+def extract_program_dates_iso(text: str) -> Tuple[str, str]:
+    """Extract an explicit program/trip date range.
+
+    Only adjacent start/end dates are accepted. A single date is never treated
+    as a trip range, so a registration deadline cannot leak into the timeline.
+    """
+    if not text:
+        return "", ""
+    text = re.sub(r"\s+", " ", text)
+
+    def ordered(start: str, end: str) -> Tuple[str, str]:
+        if not start or not end:
+            return "", ""
+        return (start, end) if start <= end else (end, start)
+
+    iso_match = re.search(
+        rf"\b(20\d{{2}}-\d{{2}}-\d{{2}})\s*{_RANGE_SEPARATOR}\s*"
+        rf"(20\d{{2}}-\d{{2}}-\d{{2}})\b",
+        text,
+        re.IGNORECASE,
+    )
+    if iso_match:
+        return ordered(iso_match.group(1), iso_match.group(2))
+
+    patterns = (
+        # June 1 - August 31, 2027
+        (
+            rf"\b({_MONTH_PATTERN})\s+(\d{{1,2}})(?:st|nd|rd|th)?\s*"
+            rf"{_RANGE_SEPARATOR}\s*({_MONTH_PATTERN})\s+(\d{{1,2}})"
+            rf"(?:st|nd|rd|th)?,?\s*(20\d{{2}})\b",
+            (1, 2, 3, 4, 5),
+        ),
+        # 1 June - 31 August 2027
+        (
+            rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({_MONTH_PATTERN})\s*"
+            rf"{_RANGE_SEPARATOR}\s*(\d{{1,2}})(?:st|nd|rd|th)?\s+"
+            rf"({_MONTH_PATTERN}),?\s*(20\d{{2}})\b",
+            (2, 1, 4, 3, 5),
+        ),
+        # June 1-5, 2027
+        (
+            rf"\b({_MONTH_PATTERN})\s+(\d{{1,2}})(?:st|nd|rd|th)?\s*"
+            rf"{_RANGE_SEPARATOR}\s*(\d{{1,2}})(?:st|nd|rd|th)?,?\s*(20\d{{2}})\b",
+            (1, 2, 1, 3, 4),
+        ),
+        # 1-5 June 2027
+        (
+            rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s*{_RANGE_SEPARATOR}\s*"
+            rf"(\d{{1,2}})(?:st|nd|rd|th)?\s+({_MONTH_PATTERN}),?\s*(20\d{{2}})\b",
+            (3, 1, 3, 2, 4),
+        ),
+    )
+    for pattern, groups in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        start = _month_day_iso(
+            match.group(groups[0]), match.group(groups[1]), match.group(groups[4])
+        )
+        end = _month_day_iso(
+            match.group(groups[2]), match.group(groups[3]), match.group(groups[4])
+        )
+        result = ordered(start, end)
+        if result != ("", ""):
+            return result
+    return "", ""
+
+
 def infer_clean_organizer(title: str, desc: str = "") -> str:
     """
     Extracts the genuine host institution / university / foundation organizer from the title & content,
@@ -498,7 +641,137 @@ AGGREGATOR_DOMAINS: List[str] = [
     "scholars4dev.com",
     "youthop.com",
     "armacad.info",
+    "opportunitiescircle.com",
+    "scholarshipscorner.website",
+    "afterschoolafrica.com",
+    "opportunitycell.com",
+    "aseanyouth.net",
+    "scholarshipscanada.com",
+    "wemakescholars.com",
 ]
+
+DIRECT_FORM_DOMAINS: List[str] = [
+    "forms.gle",
+    "docs.google.com/forms",
+    "airtable.com",
+    "qualtrics.com",
+    "typeform.com",
+    "forms.office.com",
+    "tally.so",
+    "slideroom.com",
+    "sirop.org",
+    "applyweb.com",
+    "smartme.adalia.fi",
+    "myworkdayjobs.com",
+    "formtitan.com",
+    "semantikmatch.com",
+    "surveyanyplace.com",
+    "jotform.com",
+    "cognitoforms.com",
+    "123formbuilder.com",
+    "embark.com",
+]
+
+
+def deep_scan_institutional_page_for_forms(
+    page_url: str, timeout: int = 8
+) -> Tuple[Optional[str], str]:
+    """
+    3-Hop Deep Form Finder:
+    Visits the host organization / university overview page, searches for direct
+    embedded application links (Qualtrics, Airtable, Google Forms, SlideRoom, etc.),
+    and extracts full financial and eligibility text.
+    Returns: (deep_form_url_if_found, extra_page_text)
+    """
+    if not page_url.startswith(("http://", "https://")):
+        return None, ""
+
+    html = ""
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        try:
+            import obscura_engine
+
+            if obscura_engine.is_obscura_available():
+                html = obscura_engine.fetch_rendered_html(page_url, timeout=timeout) or ""
+        except Exception as exc:
+            logger.debug("Obscura deep form scan failed for %s: %s", page_url, exc)
+
+    if not html:
+        try:
+            req = urllib.request.Request(
+                page_url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                    )
+                },
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+        except Exception as exc:
+            logger.debug("urllib deep form scan failed for %s: %s", page_url, exc)
+            return None, ""
+
+    if not html or len(html.strip()) < 100:
+        return None, ""
+
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Extract extra institutional text
+        body_text = ""
+        main_el = soup.find("main") or soup.find("article") or soup.body
+        if main_el:
+            paragraphs = [
+                p.get_text(" ", strip=True)
+                for p in main_el.find_all(["p", "li"])
+                if p.get_text(strip=True)
+            ]
+            body_text = "\n".join(paragraphs[:30])
+
+        # Search for direct form providers
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            if not href.startswith(("http://", "https://")):
+                continue
+            href_lower = href.lower()
+            if any(dom in href_lower for dom in DIRECT_FORM_DOMAINS):
+                logger.info(
+                    "Deep Form Finder: Discovered direct form portal '%s' on '%s'",
+                    href,
+                    page_url,
+                )
+                return href, body_text
+
+        # Search for high-confidence application action links
+        for a in soup.find_all("a", href=True):
+            text = a.get_text(" ", strip=True).lower()
+            href = a["href"].strip()
+            if re.search(
+                r"\b(apply\s*now|online\s*application|application\s*portal|submit\s*application|apply\s*online|register\s*here)\b",
+                text,
+            ):
+                joined = urllib.parse.urljoin(page_url, href)
+                if (
+                    joined.startswith(("http://", "https://"))
+                    and joined.lower() != page_url.lower()
+                ):
+                    parsed_j = urllib.parse.urlparse(joined)
+                    if parsed_j.path and parsed_j.path != "/":
+                        logger.info(
+                            "Deep Action Link: Discovered application action link '%s' on '%s'",
+                            joined,
+                            page_url,
+                        )
+                        return joined, body_text
+
+        return None, body_text
+    except Exception as exc:
+        logger.debug("Failed parsing deep form page %s: %s", page_url, exc)
+        return None, ""
 
 
 def resolve_two_hop_application_link(article_url: str, timeout: int = 8) -> Tuple[str, str]:
@@ -517,22 +790,35 @@ def resolve_two_hop_application_link(article_url: str, timeout: int = 8) -> Tupl
     if not is_aggregator:
         return article_url, ""
 
-    req = urllib.request.Request(
-        article_url,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            )
-        },
-    )
     html = ""
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
-    except Exception as exc:
-        logger.debug("Two-hop article fetch failed for %s: %s", article_url, exc)
-        return article_url, ""
+    # Try Obscura first for stealth TLS impersonation & anti-bot bypass when not running under unit tests
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        try:
+            import obscura_engine
+
+            if obscura_engine.is_obscura_available():
+                rendered = obscura_engine.fetch_rendered_html(article_url, timeout=timeout)
+                if rendered and len(rendered.strip()) > 100:
+                    html = rendered
+        except Exception as exc:
+            logger.debug("Obscura two-hop article fetch failed for %s: %s", article_url, exc)
+
+    if not html:
+        req = urllib.request.Request(
+            article_url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                )
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+        except Exception as exc:
+            logger.debug("Two-hop article fetch failed for %s: %s", article_url, exc)
+            return article_url, ""
 
     try:
         from bs4 import BeautifulSoup
@@ -637,6 +923,21 @@ def resolve_two_hop_application_link(article_url: str, timeout: int = 8) -> Tupl
             for _, link_cand in candidates:
                 if not any(agg in link_cand.lower() for agg in AGGREGATOR_DOMAINS):
                     logger.info("Two-Hop Link Resolver: '%s' -> '%s'", article_url, link_cand)
+                    # Hop 2/3: If link_cand is not an immediate direct form, search inside the institutional page
+                    is_direct_form = any(dom in link_cand.lower() for dom in DIRECT_FORM_DOMAINS)
+                    if not is_direct_form:
+                        deep_form_url, extra_text = deep_scan_institutional_page_for_forms(
+                            link_cand, timeout=timeout
+                        )
+                        if deep_form_url:
+                            logger.info(
+                                "3-Hop Deep Form Resolver: Upgraded '%s' -> '%s'",
+                                link_cand,
+                                deep_form_url,
+                            )
+                            link_cand = deep_form_url
+                        if extra_text:
+                            enriched_text = (enriched_text + "\n\n" + extra_text).strip()
                     return link_cand, enriched_text
 
         # Never return an aggregator link as the official application URL!
@@ -754,6 +1055,9 @@ class AsyncOpportunityCrawler:
             # Assign true host institution / university instead of aggregator name
             clean_host_organizer = infer_clean_organizer(title, desc)
             deadline_iso = extract_deadline_iso(f"{title} {desc}")
+            program_start_iso, program_end_iso = extract_program_dates_iso(
+                f"{title} {desc}"
+            )
 
             records.append(
                 RawOpportunityRecord(
@@ -771,9 +1075,14 @@ class AsyncOpportunityCrawler:
                     source_feed_id=source_cfg["feed_id"],
                     source_type="rss",
                     deadline_confidence=0.7 if deadline_iso else 0.0,
+                    program_start_iso=program_start_iso,
+                    program_end_iso=program_end_iso,
                     provenance={
                         "extraction": "rss_regex",
                         "feed_url": source_cfg.get("rss_url", ""),
+                        "program_dates_extracted": bool(
+                            program_start_iso and program_end_iso
+                        ),
                     },
                 )
             )
@@ -824,11 +1133,12 @@ class AsyncOpportunityCrawler:
                 continue
             parsed_records = self.parse_rss_items(xml_resp, src)
 
-            # Two-hop resolution for newly discovered aggregator records
+            # Two-hop and three-hop resolution for newly discovered aggregator records and short-text items
             agg_recs = [
                 r
                 for r in parsed_records
                 if any(dom in r.apply_url.lower() for dom in AGGREGATOR_DOMAINS)
+                or len(r.raw_description.strip()) < 350
             ]
             if agg_recs:
                 hop_tasks = [
@@ -838,7 +1148,11 @@ class AsyncOpportunityCrawler:
                 for r, h_res in zip(agg_recs, hop_results):
                     if not isinstance(h_res, Exception) and h_res:
                         resolved_url, full_text = h_res
-                        if resolved_url and resolved_url != r.apply_url:
+                        if (
+                            resolved_url
+                            and resolved_url != r.apply_url
+                            and not any(dom in resolved_url.lower() for dom in AGGREGATOR_DOMAINS)
+                        ):
                             r.apply_url = resolved_url
                         if full_text and len(full_text) > len(r.raw_description):
                             r.raw_description = full_text[:4000]

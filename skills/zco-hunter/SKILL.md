@@ -93,7 +93,7 @@ flowchart TD
 
 ## 3. FastMCP Tool Catalog (`zco-opportunity-engine`)
 
-The engine exposes 9 typed tools via Model Context Protocol:
+The engine exposes 10 typed tools via Model Context Protocol:
 
 | Tool Name | Parameters | Purpose |
 |---|---|---|
@@ -103,6 +103,7 @@ The engine exposes 9 typed tools via Model Context Protocol:
 | `render_categorized_dashboard` | `location_scope: str, track_filter: str` | Generates verified opportunities matrix in Markdown. |
 | `prepare_application_kit` | `opportunity_code: str` | Previews submission package, SOP, receipt, and eligibility audit breakdown. |
 | `synthesize_tailored_cv` | `opportunity_code: str, force: bool = false` | Generates vacancy-tailored 1-page ATS Typst CV adapted to the opportunity's domain. |
+| `preflight_application_url` | `opportunity_code: str` | Opens the saved apply URL read-only and verifies it is a real fillable form before any browser or submission. |
 | `synthesize_base_reference_cv` | `force: bool = false` | Generates the gold-standard Master Reference 1-page Typst CV. |
 | `approve_and_submit_opportunity` | `opportunity_code: str` | Evaluates CV requirement, synthesizes tailored CV if required, submits application, and records receipt. |
 | `inspect_vault_profile` | none | Returns all stored candidate fields and learning progress. |
@@ -114,16 +115,18 @@ The engine exposes 9 typed tools via Model Context Protocol:
 ### Workflow A: Autonomous Batch Auditing & Auto-Apply
 1. Agent invokes `run_six_hour_batch_audit(window_hours=6.0)`.
 2. Opportunities passing Zero-Cost and Tri-Jurisdiction filters transition to `VERIFIED_ELIGIBLE`.
-3. If 100% of required form fields exist in `CandidateMemoryVault`, the Chromium filler executes form submission, transitioning the opportunity to `APPLIED_AUTOMATICALLY` with receipt code `SUB-...`.
-4. If novel fields are encountered, status transitions to `PAUSED_NEEDS_USER_INPUT`, prompting the candidate for those specific fields only.
+3. If 100% of required form fields exist in `CandidateMemoryVault`, the engine runs a read-only URL/form preflight. A homepage redirect, news article, login wall, or zero-field page becomes `APPLICATION_FAILED` before Chromium opens.
+4. With `allow_submit=True`, the Chromium filler fills required fields, refuses to submit while required inputs are empty, and clicks Submit. Only a real confirmation reference produces `APPLIED_AUTOMATICALLY`; a click without one becomes `SUBMITTED_UNCONFIRMED`. Without `allow_submit`, the result is `READY_FOR_REVIEW`.
+5. If novel fields are encountered, status transitions to `PAUSED_NEEDS_USER_INPUT`, prompting the candidate for those specific fields only.
 
 ### Workflow B: Interactive Approval & CV Synthesis (Telegram & Web)
 1. Candidate views opportunity card on Telegram [@Uiii007bot](https://t.me/Uiii007bot) or Web Dashboard (`http://localhost:8080`).
 2. Candidate clicks **"✅ موافقة وتقديم (Approve & Apply)"**.
-3. System checks `is_cv_required_for_opportunity(opp)`:
-   - If required: Synthesizes tailored 1-page Typst CV, attaches it to the application vault, and submits.
-   - If not required: Submits application directly via form filler.
-4. Returns submission receipt code, timestamp, and generated documents.
+3. System runs the preflight. If the URL is not a fillable form, it stops and returns the reason without opening Chromium.
+4. System checks `is_cv_required_for_opportunity(opp)`:
+   - If required: Synthesizes a profile-grounded 1-page Typst CV, attaches it to the application vault, then attempts submission.
+   - If not required: Attempts submission through the form filler.
+5. Returns the honest status, a real confirmation reference if one was observed, timestamp, and generated documents.
 
 ### Workflow C: Self-Learning Vault Updates
 1. When candidate supplies missing answers:

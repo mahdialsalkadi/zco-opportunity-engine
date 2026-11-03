@@ -14,6 +14,8 @@ from typst_agentic_cv_engine import (
     SemanticProfileRanker,
     ConstrainedXYZRewriter,
     MasterProfileManager,
+    ClosedLoopVerifier,
+    JobOpportunityFeatures,
 )
 
 PRIVATE_MATRIC = (
@@ -91,6 +93,49 @@ def test_base_reference_cv_synthesis_and_sanitization():
     assert "github.com" not in full_text
 
 
+def test_eco_cv_uses_real_profile_projects_not_fabricated_ones():
+    opp = {
+        "opportunity_code": "TEST-WWF-ECO-001",
+        "title": "WWF Malaysia Marine Conservation & Beach Cleanup Expedition 2027",
+        "organizer": "WWF Malaysia & Marine Parks Department",
+        "track_category": "NATURE_ECO_CONSERVATION",
+        "raw_description": (
+            "Coastal marine conservation, beach cleanups, coral reef monitoring, and sea turtle protection. "
+            "CV optional; field volunteers welcome."
+        ),
+        "required_form_fields_json": "[]",
+    }
+    res = synthesize_tailored_typst_cv(opp, force=True)
+    assert res["status"] == "generated"
+    assert res["page_count"] == 1
+
+    text = " ".join(p.extract_text() for p in pypdf.PdfReader(res["pdf_path"]).pages)
+    assert "Environmental Bioacoustics" in text
+    assert "Environmental Data Automation" not in text
+    assert "Expedition Team Member" not in text
+    assert "github.com" not in text.lower()
+    assert _assert_no_matric(text) is None
+
+    project_ids = {
+        str(prj.get("id")) for prj in MasterProfileManager().data.get("projects", [])
+    }
+    if "green_ai_bioacoustics" in project_ids:
+        assert "Green-AI Rainforest Wildlife" in text
+        assert "91.4%" in text
+
+
+def test_ats_score_has_no_artificial_floor():
+    features = JobOpportunityFeatures(
+        domain_focus="GENERAL",
+        hard_skills=["Underwater Basket Weaving"],
+        target_keywords=["Zebra Migration"],
+        priority_tags=[],
+        target_program_title="Test",
+        target_organizer="Test",
+    )
+    assert ClosedLoopVerifier.calculate_ats_keyword_score("Python and PyTorch", features) == 0.0
+
+
 def test_opportunity_tailored_cv_adapts_without_private_ids():
     # 1. Technical Research Lab (Caltech) -> Must have GitHub, PyTorch, Algorithms, strictly no camp skills
     caltech_opp = {
@@ -132,8 +177,10 @@ def test_opportunity_tailored_cv_adapts_without_private_ids():
 
     assert "SOLS" in sols_text
     assert "github.com" not in sols_text  # User complaint fixed: No GitHub on community/volunteering vacancies!
-    assert "Mentorship" in sols_text or "Mentor" in sols_text
-    assert "Digital Literacy" in sols_text or "Digital Inclusion" in sols_text
+    # The old CV invented a “Peer Coding Mentor” role. The grounded CV keeps
+    # only real evidence: cross-cultural teamwork and peer learning at UTM.
+    assert "Cross-Cultural" in sols_text or "Peer-learning" in sols_text
+    assert "Community Education" in sols_text
     assert _assert_no_matric(sols_text) is None
 
     # 3. Explicit Mandatory GitHub Requirement -> ONLY here is GitHub included

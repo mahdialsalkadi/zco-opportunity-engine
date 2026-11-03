@@ -5,7 +5,7 @@
 [![Typst](https://img.shields.io/badge/typesetting-Typst%200.12+-239dad.svg)](https://typst.app/)
 [![Protocol](https://img.shields.io/badge/MCP-FastMCP-purple.svg)](https://modelcontextprotocol.io/)
 [![Database](https://img.shields.io/badge/database-SQLite%20WAL-lightgrey.svg)](https://www.sqlite.org/)
-[![Tests](https://img.shields.io/badge/tests-49%2F49%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-76%2F76%20passed-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An enterprise-grade, autonomous opportunity auditing, memory-learning, and programmatic application system engineered specifically for **Mohammad Mahdi Alsalkadi** (Syrian national, 1st-year Artificial Intelligence undergraduate at Universiti Teknologi Malaysia with honours, CGPA 3.53, Kuwait residency).
@@ -19,15 +19,15 @@ ZCO-Hunter rejects the false dichotomy between pure traditional software enginee
 * **Why Plain Code Fails:** Static web scrapers break when facing unstructured natural language descriptions, complex eligibility terms, and diverse multi-step application forms.
 * **Why Plain Prompts Fail:** Large Language Models hallucinate credentials, invent metrics, corrupt typesetting syntax (broken LaTeX/Typst delimiters), and lack persistent state machines or real browser execution.
 * **The Hybrid Solution:**
-  1. **Deterministic Core:** Python 3.11+, SQLite WAL concurrency, headless Selenium/Chromium automation, and the Rust-based Typst typesetting engine enforce ground truth, layout boundaries, and verifiable form execution.
-  2. **Model Context Protocol (FastMCP):** Standardizes all core functions into 9 typed MCP tools under `zco-opportunity-engine`, enabling any external LLM agent to inspect, audit, and submit without raw bash side-effects.
+  1. **Deterministic Core:** Python 3.11+, SQLite WAL concurrency, stealth Obscura browser engine (with Selenium fallback) for anti-bot scraping and programmatic form automation, and Rust-based Typst typesetting enforce ground truth, layout boundaries, and verifiable form execution.
+  2. **Model Context Protocol (FastMCP):** Standardizes all core functions into 10 typed MCP tools under `zco-opportunity-engine`, enabling any external LLM agent to inspect, audit, and submit without raw bash side-effects.
   3. **Agentic Skill Layer (`zco-hunter`):** Provides high-level semantic reasoning, domain feature extraction, and XYZ-format tailoring without hallucinating profile facts.
   4. **Human-in-the-Loop Supervision:** Real-time multi-channel verification via Telegram Bot ([@Uiii007bot](https://t.me/Uiii007bot)) and Web Dashboard (`http://localhost:8080`), managed 24/7 by a fault-tolerant process supervisor (`supervisor.py`).
 
 ```mermaid
 flowchart TD
     subgraph SENSING["1. Sensing & Discovery Layer"]
-        CRAWLER["24/7 Async Crawler\n(async_crawler.py)"]
+        CRAWLER["24/7 Smart Deep-Crawler v5.0\n(15 Feeds • 3-Hop Form Finder)"]
         DB[("SQLite WAL State Machine\n(data/opportunities.db)")]
         CRAWLER -->|RAW_INGESTED| DB
     end
@@ -64,7 +64,7 @@ flowchart TD
         SUPERVISOR["Supervisor Daemon\n(supervisor.py)"]
         TG_BOT["Interactive Telegram Bot\n(@Uiii007bot)"]
         DASHBOARD["Web Dashboard\n(http://localhost:8080)"]
-        AUTO_APPLY["Autonomous Chromium Filler\n(Headless DOM Form Submission)"]
+        AUTO_APPLY["Autonomous Obscura Engine\n(Headless Stealth DOM Form Submission)"]
         
         SUPERVISOR --> TG_BOT
         SUPERVISOR --> DASHBOARD
@@ -97,7 +97,7 @@ The CV engine separates raw candidate data from visual presentation, generating 
 
 ## 3. Model Context Protocol (FastMCP) Tool Catalog
 
-The server (`server.py`) exposes 9 typed tools for external AI agents:
+The server (`server.py`) exposes 10 typed tools for external AI agents:
 
 | Tool Name | Parameters | Description |
 |---|---|---|
@@ -107,6 +107,7 @@ The server (`server.py`) exposes 9 typed tools for external AI agents:
 | `render_categorized_dashboard` | `location_scope: str, track_filter: str` | Generates verified opportunities matrix in Markdown. |
 | `prepare_application_kit` | `opportunity_code: str` | Returns submission package, SOP, receipt, and audit breakdown. |
 | `synthesize_tailored_cv` | `opportunity_code: str, force: bool = false` | Generates vacancy-tailored 1-page ATS Typst CV. |
+| `preflight_application_url` | `opportunity_code: str` | Opens the saved apply URL read-only and verifies it contains a real fillable form before any browser or submission. |
 | `synthesize_base_reference_cv` | `force: bool = false` | Generates the gold-standard Master Reference 1-page Typst CV. |
 | `approve_and_submit_opportunity` | `opportunity_code: str` | Human approval action: evaluates CV requirement, synthesizes CV if needed, and submits. Only a real confirmation reference is reported as applied. |
 | `inspect_vault_profile` | none | Returns all candidate fields stored in the Memory Vault. |
@@ -135,7 +136,7 @@ cp .env.example .env
 #   (chmod 600), or set it explicitly for remote access.
 # - Keep ZCO_AUTO_SUBMIT=0 unless you explicitly want unattended Submit clicks.
 
-# 4. Run the full automated test suite (49 unit & integration tests)
+# 4. Run the full automated test suite (76 unit & integration tests)
 pytest tests/ -v
 
 # 5. Verify Master Reference Typst CV synthesis (Strictly 1 Page, 0 Matric, 0 GitHub)
@@ -160,7 +161,9 @@ python3 supervisor.py --monitor --interval-seconds 30
 
 * **Private by default:** the web dashboard requires an HttpOnly session cookie (obtained via `/?token=...`) or the `X-Dashboard-Token` header. Wildcard CORS is removed, mutation requests are same-origin checked, and the only unauthenticated routes are `/healthz` and `/favicon.ico`.
 * **No unattended submission by default:** batch audits prepare applications and mark them `READY_FOR_REVIEW`. Clicking Submit requires an explicit human approval action or the `ZCO_AUTO_SUBMIT=1` opt-in. The CLI flag is `--auto-submit`.
-* **Honest application states:** only a real confirmation reference produces `APPLIED_AUTOMATICALLY`. A clicked-but-unconfirmed submit becomes `SUBMITTED_UNCONFIRMED`; drafts become `READY_FOR_REVIEW`; failures become `APPLICATION_FAILED`. Legacy synthetic `SUB-...` / `DOM-SUB-...` receipts can be downgraded with `python scripts/quarantine_unverified_submissions.py --apply`.
+* **URL/form preflight:** before Chromium opens, the saved `apply_url` is fetched read-only. A homepage redirect, news article, login wall, embedded iframe form, zero-field page, or expired deadline blocks the attempt as `APPLICATION_FAILED`. The WWF test record (`MY-ECO-491`) is blocked this way because its URL redirects to `wwf.org.my` and has no form.
+* **Honest application states:** only a real confirmation reference observed in page text produces `APPLIED_AUTOMATICALLY`. A clicked-but-unconfirmed submit becomes `SUBMITTED_UNCONFIRMED`; drafts become `READY_FOR_REVIEW`; failures become `APPLICATION_FAILED`. Legacy synthetic `SUB-...` / `DOM-SUB-...` receipts can be downgraded with `python scripts/quarantine_unverified_submissions.py --apply`.
+* **Grounded writing:** motivation statements are built only from `config/master_profile.yaml`, use one real project and one real experience, stay within 180–280 words, and reject banned clichés, unsupported percentages, Kuwait/GitHub mentions that the opportunity did not request, and private IDs. LLM output is accepted only after the same checks.
 * **Telegram admin allow-list:** every command and callback is denied unless the chat ID is listed in `TELEGRAM_ADMIN_CHAT_IDS`. Scraped text is HTML-escaped before rendering, and bot tokens are redacted from logs.
 * **Private files stay private:** `config/candidate_profile.json`, `config/master_profile.yaml`, `config/comprehensive_portfolio.json`, generated CVs, screenshots, dashboards, and the SQLite database are ignored by git. Demo/testbed seeds are opt-in via `async_crawler.py --seed-demo`.
 

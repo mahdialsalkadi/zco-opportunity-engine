@@ -156,16 +156,22 @@ class JobDescriptionParser:
             hard_skills = ["AI Safety", "Autonomous Systems", "Policy Alignment", "Python Automation", "Algorithmic Fairness"]
             priority_tags = ["AI_AGENT", "SYSTEMS", "AUTOMATION", "LEADERSHIP"]
             target_keywords = ["AI governance", "systemic safety", "autonomous decision systems", "responsible AI", "developing economies"]
-        elif any(k in corpus for k in ["CLEANUP", "BEACH", "TURTLE", "VOLUNTEER", "CHILD", "COMMUNITY", "SOLS"]):
-            domain = "COMMUNITY_VOLUNTEERING"
-            hard_skills = ["Community Mentorship", "Outdoor Resilience", "Digital Literacy", "Team Coordination"]
-            priority_tags = ["VOLUNTEERING", "OUTDOOR", "SWIMMING", "LEADERSHIP"]
-            target_keywords = ["community engagement", "grassroots impact", "field resilience", "peer education", "collaborative action"]
-        elif any(k in corpus for k in ["CAMP", "ECO", "NATURE", "FOREST", "FRIM", "WILDLIFE", "CONSERVATION"]):
+        # Conservation must win over the generic "volunteer/beach" branch.
+        # WWF's marine expedition contains both "beach" and "volunteer", and
+        # the old order mislabeled it as community education.
+        elif any(k in corpus for k in [
+            "CAMP", "ECO", "NATURE", "FOREST", "FRIM", "WILDLIFE", "CONSERVATION",
+            "MARINE", "COASTAL", "OCEAN", "REEF", "TURTLE", "BIOACOUSTIC", "WWF",
+        ]):
             domain = "ECO_CONSERVATION"
             hard_skills = ["Green AI", "Bioacoustic Monitoring", "Wilderness Camping", "Swimming", "Field Sensor Analytics"]
             priority_tags = ["GREEN_AI", "ECO_CONSERVATION", "EDGE_COMPUTING", "OUTDOOR", "NATURE"]
             target_keywords = ["biodiversity preservation", "rainforest field camp", "bioacoustic monitoring", "edge computing", "outdoor endurance"]
+        elif any(k in corpus for k in ["CLEANUP", "BEACH", "VOLUNTEER", "CHILD", "COMMUNITY", "SOLS"]):
+            domain = "COMMUNITY_VOLUNTEERING"
+            hard_skills = ["Community Mentorship", "Outdoor Resilience", "Digital Literacy", "Team Coordination"]
+            priority_tags = ["VOLUNTEERING", "OUTDOOR", "SWIMMING", "LEADERSHIP"]
+            target_keywords = ["community engagement", "grassroots impact", "field resilience", "peer education", "collaborative action"]
         elif any(k in corpus for k in ["CALTECH", "AMGEN", "UTOKYO", "HARVARD", "RESEARCH", "LABORATORY"]):
             domain = "RESEARCH_LAB"
             hard_skills = ["Algorithms", "Deep Learning", "PyTorch", "Mathematical Rigor", "Data Structures"]
@@ -271,249 +277,164 @@ class ConstrainedXYZRewriter:
         github_val = p.get("github_url", "") if include_github else ""
 
         # 2. Domain-Specific Subtitle & Synthesized Objective
+        # Every claim below is supported by master_profile.yaml.
         if domain == "RESEARCH_LAB":
-            subtitle = f"Undergraduate AI & Computational Systems Researcher | Target: {features.target_program_title}"
+            subtitle = f"Undergraduate AI & Computational Systems Candidate | Target: {features.target_program_title}"
             obj_statement = (
                 f"First-year Artificial Intelligence honours undergraduate at Universiti Teknologi Malaysia (CGPA 3.53) "
-                f"with foundational rigor in algorithms and active deep learning optimization with PyTorch. Seeking to "
-                f"contribute computational rigor, experimental precision, and high-dedication research assistance to "
-                f"{features.target_program_title} at {features.target_organizer}."
+                f"with mathematical foundations in algorithms and hands-on PyTorch experimentation. Seeking to contribute "
+                f"laboratory research, empirical inquiry, and computational models to {features.target_program_title} at "
+                f"{features.target_organizer}."
             )
         elif domain == "AI_POLICY":
             subtitle = f"AI Systems Governance & Technical Safety Candidate | Target: {features.target_program_title}"
             obj_statement = (
-                f"First-year AI honours student combining technical understanding of neural architectures with deterministic "
-                f"verification mechanisms. Committed to advancing verifiable AI safety, multi-agent accountability, and "
-                f"trustworthy deployment frameworks through {features.target_program_title} at {features.target_organizer}."
+                f"First-year AI honours student with practical experience building deterministic verification and audit "
+                f"workflows for autonomous systems. Seeking to contribute to AI governance, systemic safety, responsible AI, "
+                f"and autonomous decision systems research through {features.target_program_title} at {features.target_organizer}."
             )
         elif domain == "COMMUNITY_VOLUNTEERING":
-            subtitle = f"Youth Digital Literacy & Community Empowerment Fellow | Target: {features.target_program_title}"
+            subtitle = f"Community Education & Cross-Cultural Engagement Candidate | Target: {features.target_program_title}"
             obj_statement = (
-                f"Dedicated undergraduate passionate about educational equity, digital literacy, and community empowerment. "
-                f"Bringing cross-cultural empathy, patient peer mentorship, and practical technical coaching to "
+                f"First-year AI undergraduate at UTM with cross-cultural teamwork and peer-learning experience in Malaysia. "
+                f"Seeking to contribute community engagement, grassroots impact, peer education, and collaborative action to "
                 f"{features.target_program_title} organized by {features.target_organizer}."
             )
         elif domain == "ECO_CONSERVATION":
-            subtitle = f"Environmental Bioacoustics & Conservation Fieldwork Fellow | Target: {features.target_program_title}"
+            subtitle = f"Environmental Bioacoustics & Conservation Fieldwork Candidate | Target: {features.target_program_title}"
             obj_statement = (
-                f"First-year computing undergraduate combining sensor signal analysis with high wilderness camping endurance "
-                f"and swimming capability. Dedicated to hands-on wildlife conservation, ecosystem restoration, and field "
-                f"logistics with {features.target_organizer} in {features.target_program_title}."
+                f"First-year computing undergraduate combining a Green-AI bioacoustic monitoring project with outdoor "
+                f"camping, trekking, and swimming readiness. Seeking to contribute biodiversity preservation, rainforest "
+                f"field work, edge computing, and outdoor endurance to {features.target_program_title} with "
+                f"{features.target_organizer}."
             )
         else:
             subtitle = f"Candidate: {features.target_program_title} | Universiti Teknologi Malaysia"
             obj_statement = (
-                f"Ambitious Artificial Intelligence honours student at UTM (CGPA 3.53). Multilingual (Arabic native, English working) "
-                f"eager to contribute technological initiative, leadership, and cross-cultural adaptability to {features.target_program_title}."
+                f"Artificial Intelligence honours undergraduate at UTM (CGPA 3.53), multilingual in Arabic and English, "
+                f"seeking to contribute technical initiative, cross-cultural adaptability, and collaborative problem solving "
+                f"to {features.target_program_title}."
             )
 
-        # 3. Deep Domain Project Formulation
+        # 3. Grounded Project Selection (master_profile.yaml is the only source)
+        project_by_id = {
+            str(prj.get("id", "")).strip().lower(): prj
+            for prj in master_data.get("projects", [])
+            if isinstance(prj, dict)
+        }
+        preferred_project_ids = {
+            "RESEARCH_LAB": ["pytorch_ml_foundations", "zco_hunter"],
+            "AI_POLICY": ["zco_hunter", "pytorch_ml_foundations"],
+            "COMMUNITY_VOLUNTEERING": ["zco_hunter", "utm_algorithmic_coursework"],
+            "ECO_CONSERVATION": ["green_ai_bioacoustics", "zco_hunter"],
+        }.get(domain, [])
+        grounded_projects: List[Dict[str, Any]] = []
+        for project_id in preferred_project_ids:
+            project = project_by_id.get(project_id)
+            if project and project not in grounded_projects:
+                grounded_projects.append(project)
+        for project in selected_projects:
+            if isinstance(project, dict) and project not in grounded_projects:
+                grounded_projects.append(project)
+        if not grounded_projects:
+            grounded_projects = [
+                prj for prj in master_data.get("projects", []) if isinstance(prj, dict)
+            ][:2]
+
         formatted_projects = []
-        if domain == "RESEARCH_LAB":
-            formatted_projects = [
-                {
-                    "title": "Deep Learning Optimization & Neural Training Repository",
-                    "role": "Independent ML Experimenter",
-                    "period": "2024 - 2025",
-                    "technologies_str": "PyTorch, Python, NumPy, Matplotlib, Model Evaluation",
-                    "bullet_points": [
-                        "Engineered deep learning architectures from scratch in PyTorch, implementing custom gradient descent tracking and loss convergence inspection across 50+ training runs.",
-                        "Analyzed classification boundaries and learning rate schedules on empirical benchmarks, mastering mathematical vectorization and tensor optimization workflows.",
-                    ],
-                },
-                {
-                    "title": "High-Concurrency Constraint Verification Engine (ZCO-Hunter)",
-                    "role": "Sole Architect & Lead Developer",
-                    "period": "2025 - Present",
-                    "technologies_str": "Python, AsyncIO, SQLite, Systems Architecture, Parsing Engines",
-                    "bullet_points": [
-                        "Architected an asynchronous pipeline monitoring international unstructured feeds, achieving 100% automated constraint evaluation across complex eligibility schemas.",
-                        "Built deterministic validation engines reducing manual qualification audit overhead from 2 hours to 30 seconds while eliminating data hallucination.",
-                    ],
-                },
+        for prj in grounded_projects[:2]:
+            bullets = [
+                str(b).strip() for b in prj.get("raw_bullet_points", []) if str(b).strip()
             ]
-        elif domain == "AI_POLICY":
-            formatted_projects = [
+            if not bullets and prj.get("summary"):
+                bullets = [str(prj["summary"]).strip()]
+            if concise_mode:
+                bullets = [
+                    (b[:150].rstrip() + "...") if len(b) > 153 else b
+                    for b in bullets[:2]
+                ]
+            formatted_projects.append(
                 {
-                    "title": "Deterministic Autonomous Auditing & Policy Gatekeeper Engine (ZCO-Hunter)",
-                    "role": "Sole Architect & Lead Developer",
-                    "period": "2025 - Present",
-                    "technologies_str": "Python, Schema Enforcers, Pydantic, Audit Provenance, Typst",
-                    "bullet_points": [
-                        "Developed an autonomous audit engine enforcing strict institutional policy constraints, eliminating agentic hallucination risks through deterministic schema verification.",
-                        "Implemented multi-jurisdiction eligibility reasoning models evaluating applicant criteria across complex legal and residency frameworks with 100% compliance.",
-                    ],
-                },
-                {
-                    "title": "Algorithmic Robustness & Model Behavioral Auditing Testbed",
-                    "role": "Independent ML Experimenter",
-                    "period": "2024 - 2025",
-                    "technologies_str": "PyTorch, Ethical AI Validation, Robustness Testing, Linux",
-                    "bullet_points": [
-                        "Audited neural network decision boundaries under adversarial input edge cases, evaluating failure modes and publishing reproducible verification reports.",
-                        "Documented empirical model behavior across edge cases to support algorithmic transparency and responsible deployment practices.",
-                    ],
-                },
-            ]
-        elif domain == "COMMUNITY_VOLUNTEERING":
-            formatted_projects = [
-                {
-                    "title": "Digital Inclusion & Opportunity Equalization Platform (ZCO-Hunter)",
-                    "role": "Community Initiative Lead & Developer",
-                    "period": "2025 - Present",
-                    "technologies_str": "Python, Community Tech, Information Accessibility, Digital Inclusion",
-                    "bullet_points": [
-                        "Engineered an accessible digital portal democratizing verified zero-cost higher education opportunities for international and underrepresented youth.",
-                        "Streamlined eligibility navigation for students from non-traditional backgrounds, reducing administrative barrier-to-entry by over 80%.",
-                    ],
-                },
-                {
-                    "title": "Algorithmic Problem-Solving & Computational Logic Portfolio",
-                    "role": "Undergraduate Student Collaborator",
-                    "period": "2024 - 2025",
-                    "technologies_str": "Python, C++, Educational Logic, Collaborative Computing",
-                    "bullet_points": [
-                        "Developed structured algorithmic problem-solving modules, collaborating in diverse student study teams to simplify complex computational logic.",
-                        "Organized peer programming reviews fostering inclusive technical problem solving among first-year international peers.",
-                    ],
-                },
-            ]
-        elif domain == "ECO_CONSERVATION":
-            formatted_projects = [
-                {
-                    "title": "Green-AI Rainforest Wildlife & Bioacoustic Sensor Pipeline",
-                    "role": "Student Researcher & ML Experimenter",
-                    "period": "2024 - 2025",
-                    "technologies_str": "Python, Audio Signal Processing, Librosa, Environmental Sensors, Edge ML",
-                    "bullet_points": [
-                        "Trained lightweight convolutional neural networks in PyTorch achieving 91.4% accuracy in acoustic event classification for conservation monitoring.",
-                        "Optimized feature extraction pipelines using Librosa spectrograms, reducing inference compute footprint for battery-constrained field sensors.",
-                    ],
-                },
-                {
-                    "title": "Environmental Data Automation & Tracking System",
-                    "role": "Developer & Environmental Tech Explorer",
-                    "period": "2025 - Present",
-                    "technologies_str": "Python, Sensor Pipelines, SQLite, Data Automation",
-                    "bullet_points": [
-                        "Automated continuous data ingestion from multiple field feeds, verifying environmental telemetry data with 100% reliability.",
-                        "Built robust reporting interfaces displaying field sensor health and observation telemetry under tropical field conditions.",
-                    ],
-                },
-            ]
+                    "title": str(prj.get("title", "")).strip(),
+                    "role": str(prj.get("role", "")).strip(),
+                    "period": str(prj.get("period", "")).strip(),
+                    "technologies_str": ", ".join(
+                        str(t).strip() for t in prj.get("technologies", []) if str(t).strip()
+                    ),
+                    "bullet_points": bullets[:2],
+                }
+            )
+
+        # 4. Grounded Experience Selection
+        exp_by_id = {
+            str(exp.get("id", "")).strip().lower(): exp
+            for exp in master_data.get("experience", [])
+            if isinstance(exp, dict)
+        }
+        if domain in ("ECO_CONSERVATION", "COMMUNITY_VOLUNTEERING"):
+            preferred_exp_ids = ["utm_student_engagement", "outdoor_conservation_readiness"]
         else:
-            # Fallback to selected projects from master profile
-            for prj in selected_projects[:2]:
-                raw_b = prj.get("raw_bullet_points", [])[:2]
-                formatted_projects.append({
-                    "title": prj["title"],
-                    "role": prj["role"],
-                    "period": prj["period"],
-                    "technologies_str": ", ".join(prj.get("technologies", [])),
-                    "bullet_points": raw_b,
-                })
+            preferred_exp_ids = ["utm_student_engagement"]
+        grounded_exp: List[Dict[str, Any]] = []
+        for exp_id in preferred_exp_ids:
+            exp = exp_by_id.get(exp_id)
+            if exp and exp not in grounded_exp:
+                grounded_exp.append(exp)
+        for exp in selected_exp:
+            if isinstance(exp, dict) and exp not in grounded_exp:
+                grounded_exp.append(exp)
+        if not grounded_exp:
+            grounded_exp = [
+                exp for exp in master_data.get("experience", []) if isinstance(exp, dict)
+            ][:1]
 
-        # Apply concise mode length caps if needed
-        if concise_mode:
-            for p_item in formatted_projects:
-                p_item["bullet_points"] = [b[:115] + "..." if len(b) > 120 else b for b in p_item["bullet_points"][:2]]
-
-        # 4. Deep Domain Experience Formulation
         formatted_exp = []
-        if domain == "COMMUNITY_VOLUNTEERING":
-            formatted_exp = [
-                {
-                    "organization": "Universiti Teknologi Malaysia (Faculty of Computing)",
-                    "role": "Academic Peer Coding Mentor & Tutor",
-                    "period": "2024 - Present",
-                    "details": [
-                        "Facilitated weekly peer coding mentoring sessions for first-year students, explaining fundamental programming logic in Python and C++.",
-                        "Fostered an encouraging, inclusive learning environment for students with diverse technical backgrounds, improving participant retention.",
-                    ] if not concise_mode else [
-                        "Facilitated weekly peer coding mentoring in Python and C++, creating an encouraging learning environment.",
-                    ],
-                },
-                {
-                    "organization": "UTM Computing & Community Initiatives",
-                    "role": "Student Coordinator & Peer Volunteer",
-                    "period": "2024 - Present",
-                    "details": [
-                        "Organized peer study circles and digital literacy workshops, bridging technical knowledge gaps for international and local students.",
-                    ],
-                },
+        for exp in grounded_exp[:2]:
+            details = [
+                str(d).strip() for d in exp.get("details", []) if str(d).strip()
             ]
-        elif domain == "ECO_CONSERVATION":
-            formatted_exp = [
+            if concise_mode:
+                details = [
+                    (d[:150].rstrip() + "...") if len(d) > 153 else d
+                    for d in details[:1]
+                ]
+            formatted_exp.append(
                 {
-                    "organization": "Outdoor Expeditions & Wilderness Conservation Readiness",
-                    "role": "Expedition Team Member & Field Volunteer",
-                    "period": "Ongoing",
-                    "details": [
-                        "Demonstrated high physical endurance and swimming proficiency in tropical rainforest trails and coastal conservation expeditions.",
-                        "Prepared for remote field conservation duties, camp maintenance, and environmental data logging under equatorial conditions.",
-                    ] if not concise_mode else [
-                        "Demonstrated high physical endurance and swimming proficiency in tropical rainforest trails and coastal expeditions.",
-                    ],
-                },
-                {
-                    "organization": "Universiti Teknologi Malaysia (Faculty of Computing)",
-                    "role": "Green-AI Student Contributor",
-                    "period": "2024 - Present",
-                    "details": [
-                        "Engaged in academic initiatives connecting computational technology with environmental sustainability and biodiversity protection.",
-                    ],
-                },
-            ]
-        else:
-            # Academic & Research Excellence for Labs / Policy / Tech
-            formatted_exp = [
-                {
-                    "organization": "Universiti Teknologi Malaysia (Faculty of Computing)",
-                    "role": "Undergraduate AI & Computer Science Scholar",
-                    "period": "2024 - Present",
-                    "details": [
-                        "Active contributor in departmental computing seminars, algorithm study groups, and reproducible research experimentation.",
-                        "Maintained an honours-grade 3.53 CGPA while conducting self-directed explorations in neural architectures and distributed systems.",
-                    ] if not concise_mode else [
-                        "Active contributor in computing seminars and algorithm study groups, maintaining honours-grade 3.53 CGPA.",
-                    ],
-                },
-            ]
+                    "organization": str(exp.get("organization", "")).strip(),
+                    "role": str(exp.get("role", "")).strip(),
+                    "period": str(exp.get("period", "")).strip(),
+                    "details": details[:2],
+                }
+            )
 
-        # 5. Deep Domain Skills Formulation
-        if domain == "RESEARCH_LAB":
-            prog_str = "Python (AsyncIO, NumPy, Pandas), C++ (OOP, Data Structures), SQL, Bash Shell"
-            ml_str = "PyTorch, Neural Network Optimization, Convolutional Architectures, Tensor Manipulation"
-            tools_str = "Linux CLI, Git & GitHub, Jupyter Lab, Typst Typesetting, VS Code"
-            langs_str = "Arabic (Native Speaker), English (Academic Working / IELTS 5.5)"
-            field_str = ""
-        elif domain == "AI_POLICY":
-            prog_str = "Python (Schema Verification, Pydantic), SQL, Relational Queries"
-            ml_str = "Algorithmic Auditability, Deterministic Schema Enforcement, Model Risk Mapping"
-            tools_str = "Deterministic Policy Engines, Git Version Control, Linux, Technical Documentation"
-            langs_str = "Arabic (Native Speaker), English (Academic Working / IELTS 5.5)"
-            field_str = ""
-        elif domain == "COMMUNITY_VOLUNTEERING":
-            prog_str = "Python Fundamentals, Computational Problem Solving, Educational Technology"
-            ml_str = "Peer Mentorship, Workshop Facilitation, Curriculum Simplification, Youth Engagement"
-            tools_str = "Interactive Code Playgrounds, Presentation Tools, Git Basics, Linux CLI"
-            langs_str = "Arabic (Native Speaker), English (Fluent Academic / IELTS 5.5)"
-            field_str = ""
-        elif domain == "ECO_CONSERVATION":
-            prog_str = "Python, Data Preprocessing (NumPy), Audio Processing (Librosa)"
-            ml_str = "Sensor Analytics, Acoustic Classification, Edge Computing Workflows"
-            tools_str = "Linux CLI, Field Sensor Tooling, Git, Markdown/Typst"
-            langs_str = "Arabic (Native Speaker), English (Academic Working / IELTS 5.5)"
-            field_str = "Wilderness Trekking, Capable Swimming, Tropical Heat Endurance, Expedition Logistics"
-        else:
-            prog = skills.get("programming_languages", [])
-            ml = skills.get("machine_learning", [])
-            tools = skills.get("developer_tools", [])
-            prog_str = ", ".join(prog)
-            ml_str = ", ".join(ml[:3])
-            tools_str = ", ".join(tools[:4])
-            langs_str = "Arabic (Native Speaker), English (Academic Working / IELTS 5.5)"
-            field_str = ""
+        # 5. Grounded Skills
+        prog = [
+            str(x).strip() for x in skills.get("programming_languages", []) if str(x).strip()
+        ]
+        ml = [
+            str(x).strip() for x in skills.get("machine_learning", []) if str(x).strip()
+        ]
+        tools = [
+            str(x).strip() for x in skills.get("developer_tools", []) if str(x).strip()
+        ]
+        language_items = skills.get("languages", [])
+        langs_str = ", ".join(
+            f"{item.get('language', '').strip()} ({item.get('proficiency', '').strip()})"
+            for item in language_items
+            if isinstance(item, dict) and item.get("language")
+        )
+        field_str = ""
+        if domain in ("ECO_CONSERVATION", "COMMUNITY_VOLUNTEERING"):
+            fitness = p.get("fitness_and_field", {}) or {}
+            field_parts = [
+                str(fitness.get("swimming", "")).strip(),
+                str(fitness.get("camping", "")).strip(),
+                str(fitness.get("endurance", "")).strip(),
+            ]
+            field_str = ", ".join(part for part in field_parts if part)
+        prog_str = ", ".join(prog[:4] if concise_mode else prog)
+        ml_str = ", ".join(ml[:3] if concise_mode else ml)
+        tools_str = ", ".join(tools[:4] if concise_mode else tools)
 
         return {
             "personal": {
@@ -608,21 +529,29 @@ class ClosedLoopVerifier:
 
     @staticmethod
     def calculate_ats_keyword_score(pdf_text: str, features: JobOpportunityFeatures) -> float:
-        """Calculates lexical keyword density and coverage score."""
-        text_lower = pdf_text.lower()
-        matched = 0
-        total = max(1, len(features.hard_skills) + len(features.target_keywords))
+        """Return honest keyword coverage, with no artificial score floor.
 
-        for skill in features.hard_skills:
-            if skill.lower() in text_lower:
-                matched += 1
+        Earlier versions clamped every CV to at least 82%, which made an ATS
+        score meaningless. Missing keywords now lower the score and are exposed
+        in the synthesis result so a weak match cannot look strong.
+        """
+        text_lower = re.sub(r"\s+", " ", (pdf_text or "").lower())
+        if not text_lower.strip():
+            return 0.0
 
-        for kw in features.target_keywords:
-            if any(term in text_lower for term in kw.lower().split()):
-                matched += 1
+        def phrase_present(phrase: str) -> bool:
+            phrase = re.sub(r"\s+", " ", str(phrase or "").lower()).strip()
+            if not phrase:
+                return False
+            if phrase in text_lower:
+                return True
+            words = [w for w in re.findall(r"[a-z0-9]+", phrase) if len(w) > 2]
+            return bool(words) and all(word in text_lower for word in words)
 
-        score = min(99.0, max(82.0, (matched / total) * 100.0))
-        return round(score, 1)
+        keywords = list(dict.fromkeys(features.hard_skills + features.target_keywords))
+        total = max(1, len(keywords))
+        matched = sum(1 for keyword in keywords if phrase_present(keyword))
+        return round((matched / total) * 100.0, 1)
 
 
 # =============================================================================
