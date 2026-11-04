@@ -257,19 +257,35 @@ def _normalize_form_payload(
     payload["university_name"] = payload.get("university_name") or "Universiti Teknologi Malaysia (UTM)"
     payload["university"] = payload["university_name"]
     payload["institution"] = payload["university_name"]
+    payload["university_email"] = payload.get("university_email") or payload.get("email") or "Mahdialsalkadi@graduate.utm.my"
+    payload["university_city"] = payload.get("university_city") or "Johor Bahru"
+    payload["university_country"] = payload.get("university_country") or "Malaysia"
     payload["degree_and_major"] = (
         payload.get("degree_and_major")
         or "Bachelor of Computer Science (Artificial Intelligence) with Honours"
     )
     payload["major"] = "Artificial Intelligence"
+    payload["specialization"] = "Artificial Intelligence"
     payload["degree"] = "Bachelor of Computer Science (Artificial Intelligence)"
     payload["study_level"] = "Undergraduate"
     payload["academic_year"] = payload.get("academic_year") or "Year 1 (Undergraduate)"
+    payload["current_academic_year_status"] = "1st year"
+    payload["length_of_degree_program_study"] = "4 years"
+    payload["anticipated_year_of_graduation"] = "2028"
+    payload["graduation_year"] = "2028"
     payload["current_cgpa"] = payload.get("current_cgpa") or "3.53 / 4.00"
     payload["cgpa"] = "3.53"
     payload["utm_matric_number"] = payload.get("utm_matric_number") or "A25AI4026"
 
-    # 8. Date of Birth & Age
+    # 8. Referees
+    payload["referee_1_name"] = payload.get("referee_1_name") or "Dr. Norazhari Abu Bakar"
+    payload["referee_1_email"] = payload.get("referee_1_email") or "mrazhari@utm.my"
+    payload["referee_2_name"] = payload.get("referee_2_name") or "Prof. Dr. Dayang Norhayati"
+    payload["referee_2_email"] = payload.get("referee_2_email") or "dayang@utm.my"
+    payload["referee_name"] = payload["referee_1_name"]
+    payload["referee_email"] = payload["referee_1_email"]
+
+    # 9. Date of Birth & Age
     payload["date_of_birth"] = payload.get("date_of_birth") or "2006-10-25"
     payload["age"] = str(payload.get("age") or "20")
 
@@ -495,9 +511,37 @@ def build_form_automation_js(
         if (t.includes('country') || t.includes('دولة') || t.includes('بلد')) return payload.country_of_current_residence || 'Malaysia';
         if (t.includes('address') || t.includes('street') || t.includes('عنوان')) return payload.address_of_current_residence || payload.residential_address_my;
 
-        // 6. Academic Profile
+        // 6. Referees & References
+        if (t.includes('referee 1') || t.includes('first referee') || t.includes('reference 1') || (t.includes('referee') && (t.includes(' 1') || t.includes('#1')))) {{
+            if (t.includes('email') || t.includes('e-mail') || t.includes('بريد')) return payload.referee_1_email || 'mrazhari@utm.my';
+            return payload.referee_1_name || 'Dr. Norazhari Abu Bakar';
+        }}
+        if (t.includes('referee 2') || t.includes('second referee') || t.includes('reference 2') || (t.includes('referee') && (t.includes(' 2') || t.includes('#2')))) {{
+            if (t.includes('email') || t.includes('e-mail') || t.includes('بريد')) return payload.referee_2_email || 'dayang@utm.my';
+            return payload.referee_2_name || 'Prof. Dr. Dayang Norhayati';
+        }}
+
+        // 7. Academic Profile & Institutional Details
+        if (t.includes('university') && (t.includes('email') || t.includes('e-mail') || t.includes('بريد'))) {{
+            return payload.university_email || payload.email || 'Mahdialsalkadi@graduate.utm.my';
+        }}
+        if (t.includes('university') && (t.includes('city') || t.includes('location') || t.includes('located') || t.includes('مدينة'))) {{
+            return payload.university_city || 'Johor Bahru';
+        }}
+        if (t.includes('university') && (t.includes('country') || t.includes('دولة') || t.includes('بلد'))) {{
+            return payload.university_country || 'Malaysia';
+        }}
         if (t.includes('university') || t.includes('institution') || t.includes('college') || t.includes('جامعة')) {{
             return payload.university_name || 'Universiti Teknologi Malaysia (UTM)';
+        }}
+        if (t.includes('specialization') || t.includes('concentration')) {{
+            return payload.specialization || 'Artificial Intelligence';
+        }}
+        if (t.includes('graduation') || t.includes('anticipated year') || t.includes('expected year') || t.includes('سنة التخرج')) {{
+            return payload.anticipated_year_of_graduation || payload.graduation_year || '2028';
+        }}
+        if (t.includes('length of degree') || t.includes('duration of degree') || t.includes('program study')) {{
+            return payload.length_of_degree_program_study || '4 years';
         }}
         if (t.includes('major') || t.includes('field of study') || t.includes('discipline') || t.includes('تخصص')) {{
             return payload.major || 'Artificial Intelligence';
@@ -511,11 +555,11 @@ def build_form_automation_js(
         if (t.includes('cgpa') || t.includes('gpa') || t.includes('معدل')) {{
             return payload.current_cgpa || '3.53 / 4.00';
         }}
-        if (t.includes('year of study') || t.includes('academic year') || t.includes('current year')) {{
-            return payload.academic_year || 'Year 1 (Undergraduate)';
+        if (t.includes('year of study') || t.includes('academic year') || t.includes('current year') || t.includes('academic year status')) {{
+            return payload.academic_year_status || payload.academic_year || '1st year';
         }}
 
-        // 7. Identity & Dates
+        // 8. Identity & Dates
         if (t.includes('date of birth') || t.includes('birth date') || t.includes('dob') || t.includes('ميلاد')) {{
             return payload.date_of_birth || '2006-10-25';
         }}
@@ -614,6 +658,68 @@ def build_form_automation_js(
         return (choiceEl.value || choiceEl.innerText || (choiceEl.getAttribute ? choiceEl.getAttribute('aria-label') : '') || '').trim().toLowerCase();
     }};
 
+    // --- STEP 3: Universal Choice & Radio Matching (Gender, Degree Level, Single Choice) ---
+    // Direct Microsoft Forms Redux Injection
+    if (window.webpackChunkmicrosoft_forms) {{
+        try {{
+            let req;
+            window.webpackChunkmicrosoft_forms.push([['zco_sync_' + Math.random()], {{}}, (r) => {{ req = r; }}]);
+            if (req) {{
+                const di = req(50014);
+                const store = di ? di.QK(4) : null;
+                const actions = req(79783);
+                if (store && actions) {{
+                    const state = store.getState();
+                    const dollarX = state['$$'] && state['$$']['$x'] ? state['$$']['$x'] : {{}};
+                    for (const [qid, q] of Object.entries(dollarX)) {{
+                        if (q.info && q.info.type === 'Question.Choice' && q.info.choices) {{
+                            const title = (q.info.title || '').toLowerCase();
+                            let chosen = null;
+                            if (title.includes('gender') || title.includes('sex') || title.includes('الجنس')) {{
+                                chosen = 'Male';
+                            }} else if (title.includes('length of degree') || title.includes('program study')) {{
+                                chosen = '4 years';
+                            }} else if (title.includes('academic year status') || title.includes('current academic year')) {{
+                                chosen = '1st year';
+                            }} else if (title.includes('graduate study plans') || title.includes('after your degree')) {{
+                                chosen = 'PhD';
+                            }} else if (title.includes('hear about') || title.includes('how did you')) {{
+                                chosen = 'University Websites';
+                            }} else if (title.includes('applying to other amgen')) {{
+                                chosen = 'No';
+                            }} else if (title.includes('participated as an amgen') || title.includes('before')) {{
+                                chosen = 'No';
+                            }} else if (title.includes('research experience')) {{
+                                chosen = 'Yes';
+                            }} else if (title.includes('undergraduate') || title.includes('degree level')) {{
+                                chosen = 'Undergraduate';
+                            }}
+
+                            if (chosen) {{
+                                const match = q.info.choices.find(c => {{
+                                    const d = (c.description || '').toLowerCase();
+                                    return d === chosen.toLowerCase() || d.includes(chosen.toLowerCase());
+                                }});
+                                if (match) {{
+                                    store.dispatch({{
+                                        type: actions.Dr,
+                                        payload: {{
+                                            qid: qid,
+                                            value: [match.description],
+                                            runtime: {{ userChange: true }}
+                                        }}
+                                    }});
+                                    filledCount++;
+                                    filledLog.push('redux_choice -> ' + title.slice(0, 30) + ' (' + match.description + ')');
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }}
+        }} catch(e) {{}}
+    }}
+
     const choiceItems = Array.from(document.querySelectorAll('[data-automation-id="choiceItem"], [role="radio"], input[type="radio"]'));
     const handledChoices = new Set();
     for (const c of choiceItems) {{
@@ -636,18 +742,39 @@ def build_form_automation_js(
                 }}
             }}
         }}
-        // 2. Degree level / Undergraduate check
-        else if (qCtx.includes('undergraduate') || qCtx.includes('degree level') || qCtx.includes('level of study') || qCtx.includes('المرحلة الجامعية') || qCtx.includes('current status')) {{
-            if (optLabel.includes('undergraduate') || optLabel.includes('bachelor') || optLabel.includes('بكالوريوس') || optLabel.includes('جامعي')) {{
+        // 2. Degree level / Study status
+        else if (qCtx.includes('undergraduate') || qCtx.includes('degree level') || qCtx.includes('level of study') || qCtx.includes('المرحلة الجامعية') || qCtx.includes('current status') || qCtx.includes('academic year')) {{
+            if (optLabel.includes('undergraduate') || optLabel.includes('bachelor') || optLabel.includes('بكالوريوس') || optLabel.includes('1st year') || optLabel.includes('year 1')) {{
                 shouldSelect = true;
-                reason = 'Degree Level Undergraduate';
+                reason = 'Degree Level Undergraduate / 1st year';
             }}
         }}
-        // 3. Confirmations & Declarations (Yes/No)
-        else if (qCtx.includes('confirm') || qCtx.includes('certify') || qCtx.includes('eligible') || qCtx.includes('full-time') || qCtx.includes('currently enrolled') || qCtx.includes('أقر') || qCtx.includes('تأكيد')) {{
+        // 3. Degree duration
+        else if (qCtx.includes('length of degree') || qCtx.includes('duration') || qCtx.includes('program study')) {{
+            if (optLabel.includes('4 years') || optLabel === '4 years') {{
+                shouldSelect = true;
+                reason = '4 years degree';
+            }}
+        }}
+        // 4. Graduate plans
+        else if (qCtx.includes('graduate study plans') || qCtx.includes('after your degree')) {{
+            if (optLabel.includes('phd') || optLabel === 'phd') {{
+                shouldSelect = true;
+                reason = 'PhD plan';
+            }}
+        }}
+        // 5. Research experience / Confirmations (Yes/No)
+        else if (qCtx.includes('research experience') || qCtx.includes('confirm') || qCtx.includes('certify') || qCtx.includes('eligible') || qCtx.includes('full-time') || qCtx.includes('currently enrolled') || qCtx.includes('أقر') || qCtx.includes('تأكيد')) {{
             if (optLabel === 'yes' || optLabel === 'نعم' || optLabel === 'true' || optLabel.startsWith('yes')) {{
                 shouldSelect = true;
                 reason = 'Yes/Confirm Choice';
+            }}
+        }}
+        // 6. Amgen host / previous participation (No)
+        else if (qCtx.includes('other amgen') || qCtx.includes('participated as an amgen') || qCtx.includes('before')) {{
+            if (optLabel === 'no' || optLabel === 'لا' || optLabel.startsWith('no')) {{
+                shouldSelect = true;
+                reason = 'No Choice';
             }}
         }}
 
@@ -901,7 +1028,22 @@ class ObscuraMCPClient:
         return self.get_tool_text(self.call_tool("browser_evaluate", {"expression": expression}))
 
     def screenshot(self, path: str) -> str:
-        return self.get_tool_text(self.call_tool("browser_screenshot", {"path": path}))
+        res = self.call_tool("browser_screenshot", {})
+        content = res.get("content", [])
+        for c in content:
+            if isinstance(c, dict) and (c.get("type") == "image" or "data" in c):
+                import base64
+                raw_b64 = c.get("data", "")
+                if raw_b64:
+                    try:
+                        data = base64.b64decode(raw_b64)
+                        p = pathlib.Path(path)
+                        p.parent.mkdir(parents=True, exist_ok=True)
+                        p.write_bytes(data)
+                        return f"Saved screenshot to {path}"
+                    except Exception as e:
+                        logger.warning("Failed to decode screenshot base64: %s", e)
+        return self.get_tool_text(res)
 
     def markdown(self) -> str:
         return self.get_tool_text(self.call_tool("browser_markdown", {}))
@@ -1080,16 +1222,76 @@ class OrnithAgenticFormFiller:
                         client.click(ref=r)
 
                 sync_js = '''(() => {
-                    const choiceItems = Array.from(document.querySelectorAll('[data-automation-id="choiceItem"]'));
+                    // 1. Direct Microsoft Forms Redux State Injection
+                    if (window.webpackChunkmicrosoft_forms) {
+                        try {
+                            let req;
+                            window.webpackChunkmicrosoft_forms.push([['zco_sync_' + Math.random()], {}, (r) => { req = r; }]);
+                            if (req) {
+                                const di = req(50014);
+                                const store = di ? di.QK(4) : null;
+                                const actions = req(79783);
+                                if (store && actions) {
+                                    const state = store.getState();
+                                    const dollarX = state['$$'] && state['$$']['$x'] ? state['$$']['$x'] : {};
+                                    for (const [qid, q] of Object.entries(dollarX)) {
+                                        if (q.info && q.info.type === 'Question.Choice' && q.info.choices) {
+                                            const title = (q.info.title || '').toLowerCase();
+                                            let chosen = null;
+                                            if (title.includes('gender') || title.includes('sex') || title.includes('الجنس')) {
+                                                chosen = 'Male';
+                                            } else if (title.includes('length of degree') || title.includes('program study')) {
+                                                chosen = '4 years';
+                                            } else if (title.includes('academic year status') || title.includes('current academic year')) {
+                                                chosen = '1st year';
+                                            } else if (title.includes('graduate study plans') || title.includes('after your degree')) {
+                                                chosen = 'PhD';
+                                            } else if (title.includes('hear about') || title.includes('how did you')) {
+                                                chosen = 'University Websites';
+                                            } else if (title.includes('applying to other amgen')) {
+                                                chosen = 'No';
+                                            } else if (title.includes('participated as an amgen') || title.includes('before')) {
+                                                chosen = 'No';
+                                            } else if (title.includes('research experience')) {
+                                                chosen = 'Yes';
+                                            } else if (title.includes('undergraduate') || title.includes('degree level')) {
+                                                chosen = 'Undergraduate';
+                                            }
+
+                                            if (chosen) {
+                                                const match = q.info.choices.find(c => {
+                                                    const d = (c.description || '').toLowerCase();
+                                                    return d === chosen.toLowerCase() || d.includes(chosen.toLowerCase());
+                                                });
+                                                if (match) {
+                                                    store.dispatch({
+                                                        type: actions.Dr,
+                                                        payload: {
+                                                            qid: qid,
+                                                            value: [match.description],
+                                                            runtime: { userChange: true }
+                                                        }
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } catch(e) {}
+                    }
+
+                    // 2. Generic DOM Choice matching
+                    const choiceItems = Array.from(document.querySelectorAll('[data-automation-id="choiceItem"], label, [role="radio"]'));
                     choiceItems.forEach(c => {
                         const span = c.querySelector('[data-automation-value]');
-                        const val = span ? span.getAttribute('data-automation-value').toLowerCase() : '';
-                        if (val === 'male' || val === 'yes' || val === 'undergraduate') {
+                        const val = span ? span.getAttribute('data-automation-value').toLowerCase() : (c.innerText || '').toLowerCase().trim();
+                        if (['male', 'yes', 'undergraduate', '4 years', '1st year', 'phd'].some(v => val === v || val.startsWith(v))) {
                             const target = c.querySelector('label') || c;
                             ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(evt => {
                                 target.dispatchEvent(new MouseEvent(evt, { bubbles: true, cancelable: true, view: window }));
                             });
-                            const input = c.querySelector('input[type="radio"]');
+                            const input = c.querySelector('input[type="radio"]') || (c.tagName === 'INPUT' ? c : null);
                             if (input) {
                                 input.checked = true;
                                 input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1100,58 +1302,88 @@ class OrnithAgenticFormFiller:
                 })()'''
                 client.evaluate(sync_js)
 
-                # Fallback: auto-detect advance button if LLM omitted it
-                if not advance_ref:
-                    for c_item in clicks:
-                        lbl = str(c_item.get("label", "")).lower()
-                        if any(w in lbl for w in ("next", "submit", "continue", "إرسال", "التالي")):
-                            advance_ref = c_item.get("ref")
+                # Classify advance button (Next vs Submit)
+                is_next = False
+                is_submit = False
+
+                if advance_ref:
+                    for line in elems_text.splitlines():
+                        if f"ref={advance_ref}" in line:
+                            line_l = line.lower()
+                            if any(w in line_l for w in ("next", "continue", "التالي", "متابعة")):
+                                is_next = True
+                            elif any(w in line_l for w in ("submit", "apply", "إرسال", "تقديم", "تأكيد")):
+                                is_submit = True
                             break
 
-                if not advance_ref:
+                if not is_next and not is_submit:
                     for line in elems_text.splitlines():
                         line_lower = line.lower()
                         if "button" in line_lower:
-                            if any(w in line_lower for w in ('"next"', "'next'", 'next', 'التالي')):
+                            if any(w in line_lower for w in ('"next"', "'next'", 'next', 'التالي', 'continue')):
                                 m = re.search(r"ref=([^\s]+)", line)
                                 if m:
                                     advance_ref = m.group(1)
+                                    is_next = True
                                     logger.info("[Ornith Agent] Fallback detected Next button: %s", advance_ref)
                                     break
-                            elif auto_click_submit and any(w in line_lower for w in ('"submit"', "'submit'", 'submit', 'إرسال')):
+                            elif any(w in line_lower for w in ('"submit"', "'submit'", 'submit', 'إرسال', 'apply', 'تقديم')):
                                 m = re.search(r"ref=([^\s]+)", line)
                                 if m:
                                     advance_ref = m.group(1)
+                                    is_submit = True
                                     logger.info("[Ornith Agent] Fallback detected Submit button: %s", advance_ref)
                                     break
 
-                if not advance_ref:
-                    final_status = "READY_FOR_REVIEW"
-                    notes = f"تمت تعبئة {filled_total} حقلاً بنجاح عبر وكيل Ornith 1.5 الذكي وبانتظار المراجعة."
-                    client.screenshot(str(post_shot_path))
-                    break
+                if is_next:
+                    clicked_ok = False
+                    if advance_ref:
+                        res_c = client.click(ref=advance_ref)
+                        if not str(res_c).startswith("Error:"):
+                            clicked_ok = True
+                    if not clicked_ok:
+                        client.click(selector='button[data-automation-id="nextButton"], button[aria-label*="Next" i]')
 
-                client.click(ref=advance_ref)
-                time.sleep(2.5)
-
-                is_submit = "submit" in str(advance_ref).lower() or not auto_click_submit
-                if is_submit:
-                    time.sleep(2)
-                    post_md = client.markdown()
-                    ref_m = re.search(r"\b(?:REF|SUB|APP|CONF)-[A-Z0-9-]{4,}\b", post_md, re.IGNORECASE)
-                    if ref_m:
-                        confirmation_ref = ref_m.group(0).upper()
-                        final_status = "APPLIED_AUTOMATICALLY"
-                        notes = f"تمت تعبئة {filled_total} حقلاً وإرسال الاستمارة بنجاح عبر وكيل Ornith 1.5 الذكي. رقم التأكيد: {confirmation_ref}"
-                    else:
-                        final_status = "SUBMITTED_UNCONFIRMED"
-                        notes = f"تمت تعبئة {filled_total} حقلاً والضغط على زر Submit عبر وكيل Ornith 1.5 الذكي."
-                    client.screenshot(str(post_shot_path))
-                    break
-                else:
+                    time.sleep(2.5)
                     final_status = "READY_FOR_REVIEW"
                     notes = f"تمت تعبئة {filled_total} حقلاً بنجاح والانتقال عبر مراحل الاستمارة عبر زر Next بواسطة وكيل Ornith 1.5 الذكي."
                     client.screenshot(str(post_shot_path))
+                    logger.info("[Ornith Agent] Advanced to next page; continuing to turn %d", turn + 1)
+                    continue
+
+                if is_submit:
+                    if not auto_click_submit:
+                        final_status = "READY_FOR_REVIEW"
+                        notes = f"تمت تعبئة كافة صفحات الاستمارة بالكامل ({filled_total} حقلاً) والوصول إلى زر الإرسال Submit بانتظار موافقة المستخدم."
+                        client.screenshot(str(post_shot_path))
+                        break
+                    else:
+                        clicked_ok = False
+                        if advance_ref:
+                            res_c = client.click(ref=advance_ref)
+                            if not str(res_c).startswith("Error:"):
+                                clicked_ok = True
+                        if not clicked_ok:
+                            client.click(selector='button[data-automation-id="submitButton"], button[type="submit"]')
+
+                        time.sleep(3.0)
+                        post_md = client.markdown()
+                        ref_m = re.search(r"\b(?:REF|SUB|APP|CONF)-[A-Z0-9-]{4,}\b", post_md, re.IGNORECASE)
+                        if ref_m:
+                            confirmation_ref = ref_m.group(0).upper()
+                            final_status = "APPLIED_AUTOMATICALLY"
+                            notes = f"تمت تعبئة {filled_total} حقلاً وإرسال الاستمارة بنجاح عبر وكيل Ornith 1.5 الذكي. رقم التأكيد: {confirmation_ref}"
+                        else:
+                            final_status = "SUBMITTED_UNCONFIRMED"
+                            notes = f"تمت تعبئة {filled_total} حقلاً والضغط على زر Submit عبر وكيل Ornith 1.5 الذكي."
+                        client.screenshot(str(post_shot_path))
+                        break
+
+                # If no Next and no Submit detected
+                final_status = "READY_FOR_REVIEW"
+                notes = f"تمت تعبئة {filled_total} حقلاً بنجاح عبر وكيل Ornith 1.5 الذكي وبانتظار المراجعة."
+                client.screenshot(str(post_shot_path))
+                break
 
         except Exception as exc:
             logger.warning("[Ornith Agent] Exception during agentic apply: %s", exc)
