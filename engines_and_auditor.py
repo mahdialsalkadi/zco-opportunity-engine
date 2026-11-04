@@ -1576,16 +1576,34 @@ class TriJurisdictionEligibilityEngine:
     def __init__(self, profile: Dict[str, Any] | None = None) -> None:
         self.profile = profile or DEFAULT_CANDIDATE_PROFILE
 
+    @staticmethod
+    def is_local_llm_available() -> bool:
+        """Checks if local Ornith 1.5 (:11434) or Jev-Style (:11435) is alive on localhost."""
+        for port in (11434, 11435):
+            url = f"http://127.0.0.1:{port}/health"
+            try:
+                req = urllib.request.Request(url, method="GET")
+                with urllib.request.urlopen(req, timeout=0.5) as resp:
+                    if resp.status == 200:
+                        return True
+            except Exception:
+                pass
+        return False
+
     def evaluate(self, opp: Dict[str, Any]) -> EligibilityAuditResult:
         """
         Main entry point for candidate eligibility evaluation.
-        Uses advanced AI LLM reasoning (OpenRouter / DeepSeek / Gemini) whenever an API key is present,
-        with seamless deterministic fallback.
+        Uses advanced AI LLM reasoning (Local Ornith 1.5 / Jev-Style / OpenRouter / Gemini)
+        whenever available, with seamless deterministic fallback.
         """
         if (
             not os.environ.get("PYTEST_CURRENT_TEST")
             and not os.environ.get("ZCO_DISABLE_AI_AUDITOR")
-            and (os.environ.get("OPENROUTER_API_KEY") or os.environ.get("GEMINI_API_KEY"))
+            and (
+                self.is_local_llm_available()
+                or os.environ.get("OPENROUTER_API_KEY")
+                or os.environ.get("GEMINI_API_KEY")
+            )
         ):
             try:
                 ai_verdict = self.evaluate_with_ai(opp)
@@ -1597,10 +1615,6 @@ class TriJurisdictionEligibilityEngine:
         return self.evaluate_deterministic(opp)
 
     def evaluate_with_ai(self, opp: Dict[str, Any], timeout: int = 15) -> Optional[EligibilityAuditResult]:
-        api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            return None
-
         candidate = self.profile.get("candidate", {})
         full_name = candidate.get("full_name", "Mohammad Mahdi")
         gender = candidate.get("gender", "male")
@@ -1649,16 +1663,66 @@ Respond strictly in valid JSON format matching this schema:
   "audit_notes": "brief summary of reasons in Arabic"
 }}"""
 
-        models = [
+        system_instruction = (
+            "You are a fast deterministic JSON decision engine. Always output valid JSON object directly without long thinking."
+        )
+
+        # 1. Local GPU Acceleration via Ornith 1.5 (9B) and Jev-Style (2B)
+        local_targets = [
+            ("http://127.0.0.1:11434/v1/chat/completions", "ornith-1.5", "[Ornith 1.5 Local AI]"),
+            ("http://127.0.0.1:11435/v1/chat/completions", "jev-decision", "[Jev-Style Local AI]"),
+        ]
+
+        for endpoint, model_name, engine_tag in local_targets:
+            try:
+                payload = {
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0.1,
+                    "max_tokens": 600,
+                }
+                req = urllib.request.Request(
+                    endpoint,
+                    headers={"Content-Type": "application/json"},
+                    data=json.dumps(payload).encode("utf-8"),
+                )
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    if resp.status == 200:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        content = data["choices"][0]["message"]["content"]
+                        parsed = json.loads(content)
+                        raw_notes = str(parsed.get("audit_notes", "")).strip()
+                        final_notes = f"{engine_tag} [الذكاء الاصطناعي] {raw_notes}" if raw_notes else f"{engine_tag} [الذكاء الاصطناعي] تم الفحص بنجاح."
+                        return EligibilityAuditResult(
+                            is_eligible=bool(parsed.get("is_eligible", False)),
+                            matched_jurisdiction_track=str(parsed.get("matched_jurisdiction_track", "")),
+                            match_score=int(parsed.get("match_score", 0)),
+                            rejection_reason=str(parsed.get("rejection_reason", "")),
+                            audit_notes=final_notes,
+                        )
+            except Exception as exc:
+                logger.debug("Local LLM %s failed/offline: %s", model_name, exc)
+                continue
+
+        # 2. Fallback to Cloud LLMs via OpenRouter
+        api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            return None
+
+        cloud_models = [
             os.environ.get("OPENROUTER_MODEL", "deepseek/deepseek-chat"),
             "meta-llama/llama-3.3-70b-instruct",
         ]
-        endpoint = "https://openrouter.ai/api/v1/chat/completions"
+        cloud_endpoint = "https://openrouter.ai/api/v1/chat/completions"
 
-        for model in models:
+        for model in cloud_models:
             try:
                 req = urllib.request.Request(
-                    endpoint,
+                    cloud_endpoint,
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
@@ -1667,7 +1731,10 @@ Respond strictly in valid JSON format matching this schema:
                     },
                     data=json.dumps({
                         "model": model,
-                        "messages": [{"role": "user", "content": prompt}],
+                        "messages": [
+                            {"role": "system", "content": system_instruction},
+                            {"role": "user", "content": prompt},
+                        ],
                         "response_format": {"type": "json_object"},
                     }).encode("utf-8"),
                 )
@@ -1677,7 +1744,7 @@ Respond strictly in valid JSON format matching this schema:
                     content = data["choices"][0]["message"]["content"]
                     parsed = json.loads(content)
                     raw_notes = str(parsed.get("audit_notes", "")).strip()
-                    final_notes = f"[AI Semantic Auditor] {raw_notes}" if raw_notes else "تم الفحص بواسطة محرك الذكاء الاصطناعي (AI Semantic Auditor)."
+                    final_notes = f"[Cloud AI Auditor] [الذكاء الاصطناعي] {raw_notes}" if raw_notes else "[Cloud AI Auditor] [الذكاء الاصطناعي] تم الفحص بنجاح."
                     return EligibilityAuditResult(
                         is_eligible=bool(parsed.get("is_eligible", False)),
                         matched_jurisdiction_track=str(parsed.get("matched_jurisdiction_track", "")),
@@ -1686,7 +1753,7 @@ Respond strictly in valid JSON format matching this schema:
                         audit_notes=final_notes,
                     )
             except Exception as exc:
-                logger.debug("Model %s failed in evaluate_with_ai: %s", model, exc)
+                logger.debug("Cloud model %s failed in evaluate_with_ai: %s", model, exc)
                 continue
 
         return None

@@ -104,6 +104,52 @@ if shutil.which("obscura"):
         "log_file": LOG_DIR / "obscura_cdp.log",
     }
 
+_ORNITH_PATH = pathlib.Path(os.environ.get("ORNITH_MODEL_PATH", "/home/mahdi/Downloads/Ornith-1.5-9B-Q4_K_M.gguf"))
+_JEV_PATH = pathlib.Path(os.environ.get("JEV_MODEL_PATH", "/home/mahdi/models/Jev-Style-Qwen3.5-2B-Decision-Q8_0.gguf"))
+_LLAMA_SERVER = shutil.which("llama-server") or "/usr/bin/llama-server"
+
+if pathlib.Path(_LLAMA_SERVER).exists():
+    if _ORNITH_PATH.exists():
+        SERVICES["ornith_llm"] = {
+            "name": "Local Ornith 1.5 9B LLM (:11434 on Vulkan GPU)",
+            "command": [
+                _LLAMA_SERVER,
+                "-m",
+                str(_ORNITH_PATH),
+                "-ngl",
+                "99",
+                "--port",
+                "11434",
+                "-c",
+                "4096",
+                "--threads",
+                "4",
+                "--alias",
+                "ornith-1.5",
+            ],
+            "log_file": LOG_DIR / "ornith_llm.log",
+        }
+    if _JEV_PATH.exists():
+        SERVICES["jev_classifier"] = {
+            "name": "Local Jev-Style 2B Classifier (:11435 on Vulkan GPU)",
+            "command": [
+                _LLAMA_SERVER,
+                "-m",
+                str(_JEV_PATH),
+                "-ngl",
+                "99",
+                "--port",
+                "11435",
+                "-c",
+                "2048",
+                "--threads",
+                "4",
+                "--alias",
+                "jev-decision",
+            ],
+            "log_file": LOG_DIR / "jev_classifier.log",
+        }
+
 
 def load_state() -> Dict[str, Any]:
     if PID_FILE.exists():
