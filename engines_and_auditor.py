@@ -1590,12 +1590,43 @@ class TriJurisdictionEligibilityEngine:
                 pass
         return False
 
+    def _enrich_terms_from_url_if_needed(self, opp: Dict[str, Any]) -> None:
+        apply_url = opp.get("apply_url") or ""
+        if not apply_url or not apply_url.startswith(("http://", "https://")):
+            return
+        if "[OFFICIAL PAGE TERMS]" in (opp.get("raw_terms_text") or ""):
+            return
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return
+
+        try:
+            req = urllib.request.Request(
+                apply_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                },
+            )
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                raw_html = resp.read().decode("utf-8", errors="replace")
+                rep = DeepPageAndPdfInspector.inspect_html_content(
+                    html_text=raw_html,
+                    base_url=apply_url,
+                    resolve_linked_pdfs=False,
+                )
+                if rep.extracted_full_text and len(rep.extracted_full_text.strip()) > 100:
+                    opp["raw_terms_text"] = f"[OFFICIAL PAGE TERMS]:\n{rep.extracted_full_text[:6000]}\n\n[SOURCE SUMMARY]:\n{opp.get('raw_terms_text', '')}"
+                if rep.required_vault_keys:
+                    opp["required_form_fields_json"] = json.dumps(rep.required_vault_keys, ensure_ascii=False)
+        except Exception as exc:
+            logger.debug("Enrich terms from %s failed: %s", apply_url, exc)
+
     def evaluate(self, opp: Dict[str, Any]) -> EligibilityAuditResult:
         """
         Main entry point for candidate eligibility evaluation.
         Uses advanced AI LLM reasoning (Local Ornith 1.5 / Jev-Style / OpenRouter / Gemini)
         whenever available, with seamless deterministic fallback.
         """
+        self._enrich_terms_from_url_if_needed(opp)
         if (
             not os.environ.get("PYTEST_CURRENT_TEST")
             and not os.environ.get("ZCO_DISABLE_AI_AUDITOR")
@@ -1614,28 +1645,29 @@ class TriJurisdictionEligibilityEngine:
 
         return self.evaluate_deterministic(opp)
 
-    def evaluate_with_ai(self, opp: Dict[str, Any], timeout: int = 15) -> Optional[EligibilityAuditResult]:
+    def evaluate_with_ai(self, opp: Dict[str, Any], timeout: int = 30) -> Optional[EligibilityAuditResult]:
         candidate = self.profile.get("candidate", {})
         full_name = candidate.get("full_name", "Mohammad Mahdi")
         gender = candidate.get("gender", "male")
+        age = candidate.get("age", 20)
 
         candidate_summary = f"""Candidate Profile:
 - Full Name: {full_name}
 - Gender: {gender} (ذكر)
+- Age: {age} years old (عمره 20 سنة - تاريخ الميلاد 2006)
 - Nationality: Syrian citizen (جواز سفر سوري)
 - Academic Status: 1st-year Bachelor of Artificial Intelligence undergraduate student at Universiti Teknologi Malaysia (UTM) in Johor Bahru, Malaysia. Expected graduation 2028. Currently enrolled with a valid Malaysia Student Pass. Does NOT hold a completed Bachelor's degree yet.
-- Primary Residency: Malaysia (Student Pass, departure hub KUL).
+- Work/Leadership Experience: University student with 0-1 years practical experience. Does NOT have 3+, 5+ years of full-time professional or community leadership experience.
+- Primary Residency: Malaysia (Student Pass, departure hub KUL). Residing in Malaysia as an international university student (NOT residing/working in Syria).
 - Secondary Residency: Kuwait (Valid permanent family residency permit / إقامة صالحة في الكويت).
 - Primary Fields: Artificial Intelligence, Machine Learning, Computer Science, Environmental Tech, Research Fellowships, Hackathons."""
 
         opp_title = opp.get("title", "")
-        opp_desc = (opp.get("raw_description") or "")[:2200]
-        opp_terms = (opp.get("raw_terms_text") or "")[:2200]
+        opp_desc = (opp.get("raw_description") or "")[:2500]
+        opp_terms = (opp.get("raw_terms_text") or "")[:6000]
         is_my = bool(opp.get("is_inside_malaysia", 0))
 
-        prompt = f"""You are the AI Eligibility Auditor for ZCO-Hunter, an automated opportunity matcher.
-Strictly audit whether the candidate is 100% eligible for the following opportunity.
-
+        prompt = f"""You are the Strict AI Eligibility Gatekeeper for ZCO-Hunter.
 {candidate_summary}
 
 Opportunity Details:
@@ -1645,32 +1677,35 @@ Opportunity Details:
 - Description: {opp_desc}
 - Full Terms: {opp_terms}
 
-Strict Audit Instructions:
-1. GENDER: The candidate is Male. If the opportunity is exclusively restricted to females / women (e.g. 'Women in STEM', 'Female only', 'for women'), you MUST reject it (is_eligible: false).
-2. ACADEMIC DEGREE: The candidate is a current undergraduate student (1st-year Bachelor).
-   - Undergraduates ARE eligible for summer internships, student research fellowships, hackathons, and youth programs, unless the program explicitly states that undergraduates are excluded or that applicants must already hold a completed degree (e.g. strictly post-graduates or degree-seeking Master's programs).
-   - If the program welcomes early-career researchers, students, or candidates from diverse academic backgrounds without requiring an existing degree, the candidate IS eligible.
-3. JURISDICTION / NATIONALITY: The candidate is Syrian citizen, currently residing in Malaysia on a student pass, with valid residency in Kuwait. If the opportunity is open globally, or targets MENA/Developing Countries, or ASEAN/Malaysian students, or GCC residents, he is eligible. Reject only if there is an explicit nationality/residency restriction that excludes him.
-4. If eligible, identify the matching jurisdiction track in Arabic (e.g., 'الجنسية السورية', 'طالب UTM في ماليزيا', 'إقامة الكويت', or 'مفتوحة للطلبة الدوليين حول العالم').
+HARD DISQUALIFICATION RULES (Answer is_eligible=false if ANY rule is violated):
+1. AGE CHECK: Candidate is 20 years old. Does the opportunity require applicants to be older (e.g. 21+, 25+, 27-39, or mid-career)? If YES -> REJECT (is_eligible: false).
+2. EXPERIENCE CHECK: Candidate has 0-1 years practical experience as a student. Does the opportunity require 2+, 3+, or 5+ years of full-time professional or community leadership experience? If YES -> REJECT (is_eligible: false).
+3. GENDER CHECK: Candidate is male. Is the opportunity restricted to females / women only? If YES -> REJECT (is_eligible: false).
+4. RESIDENCY CHECK: Candidate lives in Malaysia as an international university student. Does the opportunity require currently living and working in home country (Syria)? If YES -> REJECT (is_eligible: false).
+5. DEGREE CHECK: Candidate is a 1st-year undergraduate (no completed degree). Does the opportunity require already holding a completed Bachelor's degree (e.g. for Master's/PhD studies)? If YES -> REJECT (is_eligible: false).
+   - Note: Summer internships, undergraduate student research fellowships, hackathons, and youth camps ARE ELIGIBLE for undergraduates.
+
+If ANY of the above rules is violated, answer is_eligible=false and state the exact reason in Arabic.
+Only if NONE of the rules are violated and candidate is eligible, answer is_eligible=true.
 
 Respond strictly in valid JSON format matching this schema:
 {{
   "is_eligible": bool,
-  "rejection_reason": "clear concise explanation in Arabic if not eligible, or empty string if eligible",
-  "matched_jurisdiction_track": "explanation in Arabic of which track matches if eligible, or empty string",
+  "rejection_reason": "سبب الرفض الدقيق بالعربية أو فارغ إذا كان مؤهلاً",
+  "matched_jurisdiction_track": "مسار التطابق بالعربية أو فارغ إذا كان غير مؤهل",
   "match_score": integer between 0 and 100,
   "confidence": float between 0.0 and 1.0,
-  "audit_notes": "brief summary of reasons in Arabic"
+  "audit_notes": "ملخص الفحص بالعربية"
 }}"""
 
         system_instruction = (
-            "You are a fast deterministic JSON decision engine. Always output valid JSON object directly without long thinking."
+            "You are a strict deterministic JSON gatekeeper. Always output valid JSON object directly without long thinking."
         )
 
-        # 1. Local GPU Acceleration via Ornith 1.5 (9B) and Jev-Style (2B)
+        # 1. Local GPU Acceleration: Prioritize Jev-Style (2B) for ultra-fast decision, with Ornith 1.5 (9B) fallback
         local_targets = [
-            ("http://127.0.0.1:11434/v1/chat/completions", "ornith-1.5", "[Ornith 1.5 Local AI]"),
             ("http://127.0.0.1:11435/v1/chat/completions", "jev-decision", "[Jev-Style Local AI]"),
+            ("http://127.0.0.1:11434/v1/chat/completions", "ornith-1.5", "[Ornith 1.5 Local AI]"),
         ]
 
         for endpoint, model_name, engine_tag in local_targets:
@@ -1682,8 +1717,8 @@ Respond strictly in valid JSON format matching this schema:
                         {"role": "user", "content": prompt},
                     ],
                     "response_format": {"type": "json_object"},
-                    "temperature": 0.1,
-                    "max_tokens": 600,
+                    "temperature": 0.0,
+                    "max_tokens": 400,
                 }
                 req = urllib.request.Request(
                     endpoint,
@@ -1693,17 +1728,53 @@ Respond strictly in valid JSON format matching this schema:
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     if resp.status == 200:
                         data = json.loads(resp.read().decode("utf-8"))
-                        content = data["choices"][0]["message"]["content"]
+                        content = data["choices"][0]["message"]["content"].strip()
+                        if content.startswith("```json"):
+                            content = content[7:]
+                        elif content.startswith("```"):
+                            content = content[3:]
+                        if content.endswith("```"):
+                            content = content[:-3]
+                        content = content.strip()
                         parsed = json.loads(content)
                         raw_notes = str(parsed.get("audit_notes", "")).strip()
+                        is_eligible = bool(parsed.get("is_eligible", False))
+                        rejection_reason = str(parsed.get("rejection_reason", "")).strip()
+
+                        # Inconsistency safeguard
+                        if is_eligible and rejection_reason and any(
+                            phrase in rejection_reason
+                            for phrase in [
+                                "لا ينطبق",
+                                "غير مؤهل",
+                                "ليس لديه",
+                                "لا يتطابق",
+                                "غير مخصص",
+                                "لا يستوفي",
+                                "لا يمكن",
+                                "مخصصة للإناث",
+                                "مخصص للإناث",
+                                "يتطلب خبرة",
+                                "شرط العمر",
+                                "سنوات خبرة",
+                            ]
+                        ):
+                            is_eligible = False
+
+                        if is_eligible:
+                            rejection_reason = ""
+
                         final_notes = f"{engine_tag} [الذكاء الاصطناعي] {raw_notes}" if raw_notes else f"{engine_tag} [الذكاء الاصطناعي] تم الفحص بنجاح."
                         return EligibilityAuditResult(
-                            is_eligible=bool(parsed.get("is_eligible", False)),
+                            is_eligible=is_eligible,
                             matched_jurisdiction_track=str(parsed.get("matched_jurisdiction_track", "")),
                             match_score=int(parsed.get("match_score", 0)),
-                            rejection_reason=str(parsed.get("rejection_reason", "")),
+                            rejection_reason=rejection_reason,
                             audit_notes=final_notes,
                         )
+            except Exception as exc:
+                logger.debug("Local LLM %s failed/offline: %s", model_name, exc)
+                continue
             except Exception as exc:
                 logger.debug("Local LLM %s failed/offline: %s", model_name, exc)
                 continue
@@ -2580,6 +2651,27 @@ def audit_opportunity_record(
             opp["raw_terms_text"] = f"{opp.get('raw_terms_text', '')}\n{rep.extracted_full_text}\n{combined_pdf}"
             if rep.required_vault_keys:
                 opp["required_form_fields_json"] = json.dumps(rep.required_vault_keys, ensure_ascii=False)
+    elif apply_url.startswith(("http://", "https://")) and not os.environ.get("PYTEST_CURRENT_TEST"):
+        try:
+            req = urllib.request.Request(
+                apply_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                },
+            )
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                raw_html = resp.read().decode("utf-8", errors="replace")
+                rep = DeepPageAndPdfInspector.inspect_html_content(
+                    html_text=raw_html,
+                    base_url=apply_url,
+                    resolve_linked_pdfs=False,
+                )
+                if rep.extracted_full_text and len(rep.extracted_full_text.strip()) > 100:
+                    opp["raw_terms_text"] = f"[OFFICIAL PAGE TERMS]:\n{rep.extracted_full_text[:6000]}\n\n[SOURCE SUMMARY]:\n{opp.get('raw_terms_text', '')}"
+                if rep.required_vault_keys:
+                    opp["required_form_fields_json"] = json.dumps(rep.required_vault_keys, ensure_ascii=False)
+        except Exception as exc:
+            logger.debug("Live fetch of official page %s failed: %s", apply_url, exc)
 
     gatekeeper = ZeroCostGatekeeper()
     eligibility_engine = TriJurisdictionEligibilityEngine(profile=profile)

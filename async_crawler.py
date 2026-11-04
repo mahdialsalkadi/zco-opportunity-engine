@@ -845,12 +845,16 @@ def resolve_two_hop_application_link(article_url: str, timeout: int = 8) -> Tupl
         )
         enriched_text = ""
         if article_el:
-            paragraphs = [
-                p.get_text(" ", strip=True)
-                for p in article_el.find_all("p")
-                if p.get_text(strip=True)
-            ]
-            enriched_text = "\n\n".join(paragraphs)
+            blocks = []
+            for el in article_el.find_all(["p", "li", "h2", "h3", "h4", "h5", "h6"]):
+                txt = el.get_text(" ", strip=True)
+                if not txt or len(txt) < 3:
+                    continue
+                if el.name == "li":
+                    blocks.append(f"- {txt}")
+                else:
+                    blocks.append(txt)
+            enriched_text = "\n\n".join(blocks)
 
         # 2. Discover official external link
         social_and_ignore = [
