@@ -1030,7 +1030,7 @@ class OrnithAgenticFormFiller:
                     "{\n"
                     '  "fills": [{"ref": "...", "value": "..."}],\n'
                     '  "clicks": [{"ref": "...", "label": "..."}],\n'
-                    '  "advance_button_ref": "...",\n'
+                    '  "advance_button_ref": "...", // IMPORTANT: ref of Next or Submit button to advance the form\n'
                     '  "missing_required_fields": []\n'
                     "}\n"
                     "Return ONLY raw JSON."
@@ -1099,6 +1099,31 @@ class OrnithAgenticFormFiller:
                     });
                 })()'''
                 client.evaluate(sync_js)
+
+                # Fallback: auto-detect advance button if LLM omitted it
+                if not advance_ref:
+                    for c_item in clicks:
+                        lbl = str(c_item.get("label", "")).lower()
+                        if any(w in lbl for w in ("next", "submit", "continue", "إرسال", "التالي")):
+                            advance_ref = c_item.get("ref")
+                            break
+
+                if not advance_ref:
+                    for line in elems_text.splitlines():
+                        line_lower = line.lower()
+                        if "button" in line_lower:
+                            if any(w in line_lower for w in ('"next"', "'next'", 'next', 'التالي')):
+                                m = re.search(r"ref=([^\s]+)", line)
+                                if m:
+                                    advance_ref = m.group(1)
+                                    logger.info("[Ornith Agent] Fallback detected Next button: %s", advance_ref)
+                                    break
+                            elif auto_click_submit and any(w in line_lower for w in ('"submit"', "'submit'", 'submit', 'إرسال')):
+                                m = re.search(r"ref=([^\s]+)", line)
+                                if m:
+                                    advance_ref = m.group(1)
+                                    logger.info("[Ornith Agent] Fallback detected Submit button: %s", advance_ref)
+                                    break
 
                 if not advance_ref:
                     final_status = "READY_FOR_REVIEW"
