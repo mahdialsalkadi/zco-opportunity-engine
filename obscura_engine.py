@@ -24,6 +24,7 @@ import re
 import shutil
 import subprocess
 import time
+import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("zco.obscura")
@@ -802,6 +803,353 @@ def build_form_automation_js(
 }})()"""
 
 
+class ObscuraMCPClient:
+    """Persistent JSON-RPC client over stdin/stdout for `obscura mcp`."""
+    def __init__(self, executable: Optional[str] = None):
+        self.executable = executable or get_obscura_executable() or "obscura"
+        self.proc: Optional[subprocess.Popen] = None
+        self._req_id = 0
+
+    def start(self):
+        self.proc = subprocess.Popen(
+            [self.executable, "mcp"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        self.call_rpc("initialize", {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "ornith-form-applicant", "version": "1.0"},
+        })
+
+    def call_rpc(self, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if not self.proc or self.proc.poll() is not None:
+            raise RuntimeError("Obscura MCP process is not running")
+        self._req_id += 1
+        req_id = self._req_id
+        payload = {"jsonrpc": "2.0", "id": req_id, "method": method}
+        if params is not None:
+            payload["params"] = params
+        
+        raw_msg = json.dumps(payload) + "\n"
+        self.proc.stdin.write(raw_msg)
+        self.proc.stdin.flush()
+
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                raise RuntimeError("Obscura MCP process closed stdout unexpectedly")
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                res = json.loads(line)
+                if res.get("id") == req_id:
+                    return res
+            except json.JSONDecodeError:
+                continue
+
+    def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        res = self.call_rpc("tools/call", {"name": tool_name, "arguments": arguments})
+        if "error" in res:
+            return {"error": res["error"], "isError": True}
+        return res.get("result", {})
+
+    def get_tool_text(self, result: Dict[str, Any]) -> str:
+        content = result.get("content", [])
+        texts = []
+        for c in content:
+            if isinstance(c, dict) and "text" in c:
+                texts.append(c["text"])
+        return "\n".join(texts)
+
+    def navigate(self, url: str) -> str:
+        return self.get_tool_text(self.call_tool("browser_navigate", {"url": url}))
+
+    def wait_for(self, selector: str, timeout: int = 10) -> str:
+        return self.get_tool_text(self.call_tool("browser_wait_for", {"selector": selector, "timeout": timeout}))
+
+    def scroll(self, direction: str = "down", amount: int = 1200) -> str:
+        return self.get_tool_text(self.call_tool("browser_scroll", {"direction": direction, "amount": amount}))
+
+    def snapshot(self) -> str:
+        return self.get_tool_text(self.call_tool("browser_snapshot", {}))
+
+    def interactive_elements(self) -> str:
+        return self.get_tool_text(self.call_tool("browser_interactive_elements", {}))
+
+    def fill(self, ref: Optional[str] = None, selector: Optional[str] = None, value: str = "") -> str:
+        args = {"value": value}
+        if ref:
+            args["ref"] = ref
+        if selector:
+            args["selector"] = selector
+        return self.get_tool_text(self.call_tool("browser_fill", args))
+
+    def click(self, ref: Optional[str] = None, selector: Optional[str] = None) -> str:
+        args = {}
+        if ref:
+            args["ref"] = ref
+        if selector:
+            args["selector"] = selector
+        return self.get_tool_text(self.call_tool("browser_click", args))
+
+    def evaluate(self, expression: str) -> str:
+        return self.get_tool_text(self.call_tool("browser_evaluate", {"expression": expression}))
+
+    def screenshot(self, path: str) -> str:
+        return self.get_tool_text(self.call_tool("browser_screenshot", {"path": path}))
+
+    def markdown(self) -> str:
+        return self.get_tool_text(self.call_tool("browser_markdown", {}))
+
+    def close(self):
+        if self.proc:
+            try:
+                self.call_tool("browser_close", {})
+            except Exception:
+                pass
+            try:
+                self.proc.terminate()
+                self.proc.wait(timeout=2)
+            except Exception:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+            self.proc = None
+
+
+class OrnithAgenticFormFiller:
+    """
+    Phase 8 Autonomous AI Agent Form Submitter.
+    Uses Ornith 1.5 9B (Qwen 9B) running locally on Vulkan GPU to inspect,
+    plan, and interactively execute multi-step form applications via Obscura MCP tools.
+    """
+    def __init__(
+        self,
+        endpoint: str = "http://127.0.0.1:11434/v1/chat/completions",
+        model: str = "ornith-1.5"
+    ):
+        self.endpoint = endpoint
+        self.model = model
+
+    def is_available(self) -> bool:
+        try:
+            req = urllib.request.Request("http://127.0.0.1:11434/v1/models")
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    def _call_ornith(self, system_prompt: str, user_prompt: str, timeout: int = 35) -> str:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": 0.1,
+            "max_tokens": 1024
+        }
+        req = urllib.request.Request(
+            self.endpoint,
+            headers={"Content-Type": "application/json"},
+            data=json.dumps(payload).encode("utf-8")
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data["choices"][0]["message"]["content"]
+
+    def run_agentic_apply(
+        self,
+        opportunity_code: str,
+        apply_url: str,
+        vault_values: Dict[str, str],
+        tailored_motivation_essay: str,
+        screenshots_dir: pathlib.Path,
+        auto_click_submit: bool = True,
+        max_turns: int = 4,
+        timeout: int = 35,
+    ) -> Any:
+        from engines_and_auditor import BrowserSubmissionReceipt
+
+        screenshots_dir = pathlib.Path(screenshots_dir).resolve()
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        post_shot_path = screenshots_dir / f"{opportunity_code}_submitted.png"
+
+        client = ObscuraMCPClient()
+        filled_total = 0
+        confirmation_ref = ""
+        notes = ""
+        final_status = "APPLICATION_FAILED"
+        body_text_accum = ""
+
+        try:
+            client.start()
+            logger.info("[Ornith Agent] Navigating to %s for %s", apply_url, opportunity_code)
+            client.navigate(apply_url)
+            client.wait_for("input, textarea, select, [data-automation-id='questionItem']", timeout=12)
+
+            for turn in range(1, max_turns + 1):
+                logger.info("[Ornith Agent] Starting turn %d/%d for %s", turn, max_turns, opportunity_code)
+                client.scroll("down", 1500)
+                time.sleep(1)
+
+                markdown_content = client.markdown()
+                body_text_accum = markdown_content[:2000]
+                ref_match = re.search(r"\b(?:REF|SUB|APP|CONF)-[A-Z0-9-]{4,}\b", markdown_content, re.IGNORECASE)
+                if ref_match:
+                    confirmation_ref = ref_match.group(0).upper()
+                    final_status = "APPLIED_AUTOMATICALLY"
+                    notes = f"تم تأكيد التقديم بنجاح عبر وكيل Ornith 1.5 الذكي. رقم التأكيد: {confirmation_ref}"
+                    client.screenshot(str(post_shot_path))
+                    break
+
+                if any(k in markdown_content.lower() for k in ("your response was submitted", "thank you for submitting", "تم إرسال ردك", "application submitted")):
+                    final_status = "APPLIED_AUTOMATICALLY" if confirmation_ref else "SUBMITTED_UNCONFIRMED"
+                    notes = "تم إرسال رد الاستمارة بنجاح عبر وكيل Ornith 1.5 الذكي."
+                    client.screenshot(str(post_shot_path))
+                    break
+
+                client.snapshot()
+                elems_text = client.interactive_elements()
+                if not elems_text.strip():
+                    logger.info("[Ornith Agent] No interactive elements visible on page.")
+                    break
+
+                system_prompt = (
+                    "You are Ornith 1.5, the Autonomous Form Applicant Agent. "
+                    "You perceive interactive form elements and decide actions to fill the application. "
+                    "Candidate Profile:\n"
+                    f"{json.dumps(vault_values, indent=2)}\n\n"
+                    "Allowed Actions format:\n"
+                    "{\n"
+                    '  "fills": [{"ref": "...", "value": "..."}],\n'
+                    '  "clicks": [{"ref": "...", "label": "..."}],\n'
+                    '  "advance_button_ref": "...",\n'
+                    '  "missing_required_fields": []\n'
+                    "}\n"
+                    "Return ONLY raw JSON."
+                )
+
+                user_prompt = f"Current Interactive Form Elements:\n{elems_text}"
+                try:
+                    raw_response = self._call_ornith(system_prompt, user_prompt, timeout=timeout)
+                except Exception as exc:
+                    logger.warning("[Ornith Agent] LLM inference failed: %s", exc)
+                    break
+
+                clean_json = raw_response.strip()
+                if "```" in clean_json:
+                    clean_json = clean_json.split("```")[1]
+                    if clean_json.startswith("json"):
+                        clean_json = clean_json[4:]
+                    clean_json = clean_json.split("```")[0].strip()
+
+                try:
+                    plan = json.loads(clean_json)
+                except Exception as exc:
+                    logger.warning("[Ornith Agent] Failed to parse plan JSON: %s", exc)
+                    break
+
+                missing = plan.get("missing_required_fields", [])
+                if missing:
+                    final_status = "PAUSED_NEEDS_USER_INPUT"
+                    notes = f"الاستمارة تتطلب بيانات غير متوفرة في الملف التعريفي: {'; '.join(missing)}"
+                    client.screenshot(str(post_shot_path))
+                    break
+
+                fills = plan.get("fills", [])
+                clicks = plan.get("clicks", [])
+                advance_ref = plan.get("advance_button_ref")
+
+                for item in fills:
+                    r = item.get("ref")
+                    v = item.get("value")
+                    if r and v:
+                        client.fill(ref=r, value=str(v))
+                        filled_total += 1
+
+                for item in clicks:
+                    r = item.get("ref")
+                    if r:
+                        client.click(ref=r)
+
+                sync_js = '''(() => {
+                    const choiceItems = Array.from(document.querySelectorAll('[data-automation-id="choiceItem"]'));
+                    choiceItems.forEach(c => {
+                        const span = c.querySelector('[data-automation-value]');
+                        const val = span ? span.getAttribute('data-automation-value').toLowerCase() : '';
+                        if (val === 'male' || val === 'yes' || val === 'undergraduate') {
+                            const target = c.querySelector('label') || c;
+                            ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(evt => {
+                                target.dispatchEvent(new MouseEvent(evt, { bubbles: true, cancelable: true, view: window }));
+                            });
+                            const input = c.querySelector('input[type="radio"]');
+                            if (input) {
+                                input.checked = true;
+                                input.dispatchEvent(new Event('input', { bubbles: true }));
+                                input.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+                        }
+                    });
+                })()'''
+                client.evaluate(sync_js)
+
+                if not advance_ref:
+                    final_status = "READY_FOR_REVIEW"
+                    notes = f"تمت تعبئة {filled_total} حقلاً بنجاح عبر وكيل Ornith 1.5 الذكي وبانتظار المراجعة."
+                    client.screenshot(str(post_shot_path))
+                    break
+
+                client.click(ref=advance_ref)
+                time.sleep(2.5)
+
+                is_submit = "submit" in str(advance_ref).lower() or not auto_click_submit
+                if is_submit:
+                    time.sleep(2)
+                    post_md = client.markdown()
+                    ref_m = re.search(r"\b(?:REF|SUB|APP|CONF)-[A-Z0-9-]{4,}\b", post_md, re.IGNORECASE)
+                    if ref_m:
+                        confirmation_ref = ref_m.group(0).upper()
+                        final_status = "APPLIED_AUTOMATICALLY"
+                        notes = f"تمت تعبئة {filled_total} حقلاً وإرسال الاستمارة بنجاح عبر وكيل Ornith 1.5 الذكي. رقم التأكيد: {confirmation_ref}"
+                    else:
+                        final_status = "SUBMITTED_UNCONFIRMED"
+                        notes = f"تمت تعبئة {filled_total} حقلاً والضغط على زر Submit عبر وكيل Ornith 1.5 الذكي."
+                    client.screenshot(str(post_shot_path))
+                    break
+                else:
+                    final_status = "READY_FOR_REVIEW"
+                    notes = f"تمت تعبئة {filled_total} حقلاً بنجاح والانتقال عبر مراحل الاستمارة عبر زر Next بواسطة وكيل Ornith 1.5 الذكي."
+                    client.screenshot(str(post_shot_path))
+
+        except Exception as exc:
+            logger.warning("[Ornith Agent] Exception during agentic apply: %s", exc)
+            final_status = "APPLICATION_FAILED"
+            notes = f"تعذر استكمال التقديم عبر وكيل Ornith: {exc}"
+        finally:
+            client.close()
+
+        if final_status == "APPLICATION_FAILED" and filled_total == 0:
+            return None
+
+        return BrowserSubmissionReceipt(
+            status=final_status,
+            confirmation_reference=confirmation_ref,
+            confirmation_page_text=body_text_accum[:1000],
+            pre_submit_screenshot_path="",
+            post_submit_screenshot_path=str(post_shot_path) if post_shot_path.exists() else "",
+            filled_dom_fields_count=filled_total,
+            uploaded_files_count=0,
+            notes=notes,
+        )
+
+
 def obscura_fill_and_submit(
     opportunity_code: str,
     apply_url: str,
@@ -813,6 +1161,7 @@ def obscura_fill_and_submit(
 ) -> Any:
     """
     Execute end-to-end form inspection, field filling, and submission via Obscura.
+    Prioritizes Ornith 1.5 9B Autonomous AI Agent, with resilient heuristic fallback.
     Returns a BrowserSubmissionReceipt-compatible object.
     """
     from engines_and_auditor import BrowserSubmissionReceipt
@@ -823,6 +1172,27 @@ def obscura_fill_and_submit(
     screenshots_dir.mkdir(parents=True, exist_ok=True)
     post_shot_path = screenshots_dir / f"{opportunity_code}_submitted.png"
 
+    # --- TIER 1: Autonomous AI Agent (Ornith 1.5 9B) for live web portals ---
+    if apply_url.startswith(("http://", "https://")):
+        ornith_filler = OrnithAgenticFormFiller()
+        if ornith_filler.is_available():
+            try:
+                agent_receipt = ornith_filler.run_agentic_apply(
+                    opportunity_code=opportunity_code,
+                    apply_url=apply_url,
+                    vault_values=payload,
+                    tailored_motivation_essay=tailored_motivation_essay,
+                    screenshots_dir=screenshots_dir,
+                    auto_click_submit=auto_click_submit,
+                    timeout=timeout,
+                )
+                if agent_receipt is not None:
+                    return agent_receipt
+            except Exception as exc:
+                logger.warning("OrnithAgenticFormFiller encountered exception, falling back: %s", exc)
+            logger.warning("OrnithAgenticFormFiller encountered exception, falling back: %s", exc)
+
+    # --- TIER 2: Resilient Heuristic DOM Runner ---
     js_code = build_form_automation_js(payload, auto_click_submit=auto_click_submit)
 
     ok, out = obscura_fetch(
