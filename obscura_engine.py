@@ -313,6 +313,9 @@ def build_form_automation_js(
         if (!el || val === undefined || val === null) return false;
         try {{
             el.focus();
+            if (typeof globalThis.__obscura_setFieldValue === 'function') {{
+                globalThis.__obscura_setFieldValue(el, 'value', val);
+            }}
             const proto = el instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
             const desc = Object.getOwnPropertyDescriptor(proto, 'value');
             if (desc && desc.set) {{
@@ -322,6 +325,39 @@ def build_form_automation_js(
             }}
             el.dispatchEvent(new Event('input', {{ bubbles: true, cancelable: true }}));
             el.dispatchEvent(new Event('change', {{ bubbles: true, cancelable: true }}));
+            if (el.l && el.l['inputfalse']) {{
+                try {{
+                    el.l['inputfalse']({{
+                        currentTarget: el,
+                        target: el,
+                        type: 'input',
+                        preventDefault: () => {{}},
+                        stopPropagation: () => {{}}
+                    }});
+                }} catch(e) {{}}
+            }}
+            if (el.l && el.l['changefalse']) {{
+                try {{
+                    el.l['changefalse']({{
+                        currentTarget: el,
+                        target: el,
+                        type: 'change',
+                        preventDefault: () => {{}},
+                        stopPropagation: () => {{}}
+                    }});
+                }} catch(e) {{}}
+            }}
+            if (el.l && el.l['blurfalse']) {{
+                try {{
+                    el.l['blurfalse']({{
+                        currentTarget: el,
+                        target: el,
+                        type: 'blur',
+                        preventDefault: () => {{}},
+                        stopPropagation: () => {{}}
+                    }});
+                }} catch(e) {{}}
+            }}
             el.blur();
             return true;
         }} catch (err) {{
@@ -537,10 +573,32 @@ def build_form_automation_js(
 
     // --- STEP 3: Universal Choice & Radio Matching (Gender, Degree Level, Single Choice) ---
     const getChoiceQuestionContext = (choiceEl) => {{
-        const qContainer = choiceEl.closest('[data-automation-id="questionItem"], [role="listitem"], fieldset, [role="radiogroup"], .office-form-question, .freebirdFormviewerViewNumberedItemContainer') || choiceEl.parentElement;
-        if (!qContainer) return '';
-        const titleEl = qContainer.querySelector('[data-automation-id="questionTitle"], legend, label, [role="heading"], .freebirdFormviewerViewItemsItemItemTitle');
-        return (titleEl ? titleEl.innerText : qContainer.innerText.slice(0, 150)).toLowerCase();
+        // Priority 1: Check aria-labelledby on radiogroup or fieldset
+        const rg = choiceEl.closest('[role="radiogroup"], fieldset');
+        if (rg && rg.getAttribute('aria-labelledby')) {{
+            const ids = rg.getAttribute('aria-labelledby').split(/\\s+/);
+            const texts = ids.map(id => {{
+                const el = document.getElementById(id);
+                return el ? el.innerText.trim() : '';
+            }}).filter(Boolean);
+            if (texts.length > 0) return texts.join(' ').toLowerCase();
+        }}
+
+        // Priority 2: Standard question container traversal
+        let curr = choiceEl.parentElement;
+        while (curr && curr !== document.body) {{
+            const titleEl = curr.querySelector('[data-automation-id="questionTitle"], legend, .freebirdFormviewerViewItemsItemItemTitle, .office-form-question-title');
+            if (titleEl && !titleEl.contains(choiceEl)) {{
+                return titleEl.innerText.trim().toLowerCase();
+            }}
+            if (curr.hasAttribute && (curr.getAttribute('data-automation-id') === 'questionItem' || curr.classList.contains('office-form-question') || curr.classList.contains('freebirdFormviewerViewNumberedItemContainer'))) {{
+                const heading = curr.querySelector('[role="heading"], [data-automation-id="questionTitle"], legend');
+                if (heading && !heading.contains(choiceEl)) return heading.innerText.trim().toLowerCase();
+                return curr.innerText.slice(0, 200).toLowerCase();
+            }}
+            curr = curr.parentElement;
+        }}
+        return '';
     }};
 
     const getChoiceOptionLabel = (choiceEl) => {{
@@ -601,18 +659,46 @@ def build_form_automation_js(
                 targetToClick.dispatchEvent(new MouseEvent(evt, {{ bubbles: true, cancelable: true, view: window }}));
             }});
             if (input) {{
+                if (typeof globalThis.__obscura_setInputChecked === 'function') {{
+                    globalThis.__obscura_setInputChecked(input, true);
+                }}
                 const proto = HTMLInputElement.prototype;
                 const setter = Object.getOwnPropertyDescriptor(proto, 'checked')?.set;
                 if (setter) setter.call(input, true); else input.checked = true;
                 input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 input.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 if (input.l && input.l['changefalse']) {{
-                    try {{ input.l['changefalse']({{ currentTarget: input, target: input, type: 'change' }}); }} catch(e) {{}}
+                    try {{
+                        input.l['changefalse']({{
+                            currentTarget: input,
+                            target: input,
+                            type: 'change',
+                            preventDefault: () => {{}},
+                            stopPropagation: () => {{}}
+                        }});
+                    }} catch(e) {{}}
                 }}
+                try {{ input.click(); }} catch(e) {{}}
             }}
             if (c.getAttribute && c.getAttribute('role') === 'radio') {{
                 c.setAttribute('aria-checked', 'true');
             }}
+            try {{
+                const qKeyStorage = Object.keys(sessionStorage).find(k => k.startsWith('officeforms.answermap'));
+                if (qKeyStorage) {{
+                    const arr = JSON.parse(sessionStorage.getItem(qKeyStorage) || '[]');
+                    const qItemContainer = c.closest('[data-automation-id="questionItem"]');
+                    const qIdDiv = qItemContainer ? qItemContainer.querySelector('div[id^="QuestionId_"]') : null;
+                    const qId = qIdDiv ? qIdDiv.id.replace('QuestionId_', '') : '';
+                    if (qId) {{
+                        const entry = arr.find(x => x.QuestionId === qId);
+                        if (entry) {{
+                            entry.Answer = optLabel.charAt(0).toUpperCase() + optLabel.slice(1);
+                            sessionStorage.setItem(qKeyStorage, JSON.stringify(arr));
+                        }}
+                    }}
+                }}
+            }} catch(e) {{}}
             handledChoices.add(qKey);
             filledCount++;
             filledLog.push('choice -> ' + reason + ' (' + optLabel + ')');

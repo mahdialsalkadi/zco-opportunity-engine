@@ -2598,7 +2598,9 @@ class AutonomousApplicantEngine:
                 confirmation_ref = ""
             elif receipt.status == "PAUSED_AT_CAPTCHA":
                 final_status = OpportunityStatus.PAUSED_AT_CAPTCHA
-            elif receipt.status == "READY_FOR_SUBMISSION":
+            elif receipt.status == "PAUSED_NEEDS_USER_INPUT":
+                final_status = OpportunityStatus.PAUSED_NEEDS_USER_INPUT
+            elif receipt.status in ("READY_FOR_SUBMISSION", "READY_FOR_REVIEW"):
                 final_status = OpportunityStatus.READY_FOR_REVIEW
             else:
                 final_status = OpportunityStatus.APPLICATION_FAILED
