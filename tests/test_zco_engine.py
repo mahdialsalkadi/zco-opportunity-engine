@@ -170,6 +170,53 @@ def test_tri_jurisdiction_eligibility_engine():
     assert "دراسات عليا" in res_masters.rejection_reason
 
 
+def test_tri_jurisdiction_ai_evaluation(monkeypatch):
+    from unittest.mock import MagicMock, patch
+
+    engine = TriJurisdictionEligibilityEngine()
+
+    # Simulate OpenRouter AI response for female-only scholarship
+    ai_mock_response = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps({
+                        "is_eligible": False,
+                        "rejection_reason": "الفرصة مخصصة للإناث فقط (Women / Female Only)",
+                        "matched_jurisdiction_track": "",
+                        "match_score": 10,
+                        "confidence": 0.95,
+                        "audit_notes": "المرشح ذكر والفرصة تشترط إناث فقط.",
+                    })
+                }
+            }
+        ]
+    }
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "mock-test-key")
+    # Temporarily remove PYTEST_CURRENT_TEST to test evaluate() AI routing branch
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(ai_mock_response).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        res = engine.evaluate({
+            "title": "Swedish Institute Pioneering Women in STEM Scholarship 2027",
+            "is_inside_malaysia": 0,
+            "track_category": "GREEN_AI_CLIMATE_TECH",
+            "raw_description": "Exclusively for women leaders in STEM.",
+            "raw_terms_text": "Female applicants only.",
+        })
+
+        assert res.is_eligible is False
+        assert "للإناث" in res.rejection_reason or "إناث" in res.rejection_reason
+        assert "AI Semantic Auditor" in res.audit_notes or "الذكاء الاصطناعي" in res.audit_notes
+
+
+
 def test_candidate_memory_vault_learning(temp_db, tmp_path):
     profile_json = tmp_path / "candidate_profile.json"
     vault = CandidateMemoryVault(temp_db, profile_json_path=profile_json)

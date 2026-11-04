@@ -45,6 +45,22 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("zco_engines")
 
+def _load_env_if_needed() -> None:
+    env_file = pathlib.Path(__file__).resolve().parent / ".env"
+    if env_file.exists():
+        try:
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip().strip("'\"")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+        except Exception:
+            pass
+
+_load_env_if_needed()
+
 from bs4 import BeautifulSoup
 from database import OpportunityDatabase, OpportunityStatus
 from file_utils import atomic_write_json, atomic_write_text
@@ -1561,6 +1577,121 @@ class TriJurisdictionEligibilityEngine:
         self.profile = profile or DEFAULT_CANDIDATE_PROFILE
 
     def evaluate(self, opp: Dict[str, Any]) -> EligibilityAuditResult:
+        """
+        Main entry point for candidate eligibility evaluation.
+        Uses advanced AI LLM reasoning (OpenRouter / DeepSeek / Gemini) whenever an API key is present,
+        with seamless deterministic fallback.
+        """
+        if (
+            not os.environ.get("PYTEST_CURRENT_TEST")
+            and not os.environ.get("ZCO_DISABLE_AI_AUDITOR")
+            and (os.environ.get("OPENROUTER_API_KEY") or os.environ.get("GEMINI_API_KEY"))
+        ):
+            try:
+                ai_verdict = self.evaluate_with_ai(opp)
+                if ai_verdict is not None:
+                    return ai_verdict
+            except Exception as exc:
+                logger.debug("AI eligibility audit failed, falling back to deterministic: %s", exc)
+
+        return self.evaluate_deterministic(opp)
+
+    def evaluate_with_ai(self, opp: Dict[str, Any], timeout: int = 15) -> Optional[EligibilityAuditResult]:
+        api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            return None
+
+        candidate = self.profile.get("candidate", {})
+        full_name = candidate.get("full_name", "Mohammad Mahdi")
+        gender = candidate.get("gender", "male")
+
+        candidate_summary = f"""Candidate Profile:
+- Full Name: {full_name}
+- Gender: {gender} (ذكر)
+- Nationality: Syrian citizen (جواز سفر سوري)
+- Academic Status: 1st-year Bachelor of Artificial Intelligence undergraduate student at Universiti Teknologi Malaysia (UTM) in Johor Bahru, Malaysia. Expected graduation 2028. Currently enrolled with a valid Malaysia Student Pass. Does NOT hold a completed Bachelor's degree yet.
+- Primary Residency: Malaysia (Student Pass, departure hub KUL).
+- Secondary Residency: Kuwait (Valid permanent family residency permit / إقامة صالحة في الكويت).
+- Primary Fields: Artificial Intelligence, Machine Learning, Computer Science, Environmental Tech, Research Fellowships, Hackathons."""
+
+        opp_title = opp.get("title", "")
+        opp_desc = (opp.get("raw_description") or "")[:2200]
+        opp_terms = (opp.get("raw_terms_text") or "")[:2200]
+        is_my = bool(opp.get("is_inside_malaysia", 0))
+
+        prompt = f"""You are the AI Eligibility Auditor for ZCO-Hunter, an automated opportunity matcher.
+Strictly audit whether the candidate is 100% eligible for the following opportunity.
+
+{candidate_summary}
+
+Opportunity Details:
+- Title: {opp_title}
+- Inside Malaysia: {is_my}
+- Track Category: {opp.get('track_category', 'GENERAL')}
+- Description: {opp_desc}
+- Full Terms: {opp_terms}
+
+Strict Audit Instructions:
+1. GENDER: The candidate is Male. If the opportunity is exclusively restricted to females / women (e.g. 'Women in STEM', 'Female only', 'for women'), you MUST reject it (is_eligible: false).
+2. ACADEMIC DEGREE: The candidate is a current undergraduate student (1st-year Bachelor).
+   - Undergraduates ARE eligible for summer internships, student research fellowships, hackathons, and youth programs, unless the program explicitly states that undergraduates are excluded or that applicants must already hold a completed degree (e.g. strictly post-graduates or degree-seeking Master's programs).
+   - If the program welcomes early-career researchers, students, or candidates from diverse academic backgrounds without requiring an existing degree, the candidate IS eligible.
+3. JURISDICTION / NATIONALITY: The candidate is Syrian citizen, currently residing in Malaysia on a student pass, with valid residency in Kuwait. If the opportunity is open globally, or targets MENA/Developing Countries, or ASEAN/Malaysian students, or GCC residents, he is eligible. Reject only if there is an explicit nationality/residency restriction that excludes him.
+4. If eligible, identify the matching jurisdiction track in Arabic (e.g., 'الجنسية السورية', 'طالب UTM في ماليزيا', 'إقامة الكويت', or 'مفتوحة للطلبة الدوليين حول العالم').
+
+Respond strictly in valid JSON format matching this schema:
+{{
+  "is_eligible": bool,
+  "rejection_reason": "clear concise explanation in Arabic if not eligible, or empty string if eligible",
+  "matched_jurisdiction_track": "explanation in Arabic of which track matches if eligible, or empty string",
+  "match_score": integer between 0 and 100,
+  "confidence": float between 0.0 and 1.0,
+  "audit_notes": "brief summary of reasons in Arabic"
+}}"""
+
+        models = [
+            os.environ.get("OPENROUTER_MODEL", "deepseek/deepseek-chat"),
+            "meta-llama/llama-3.3-70b-instruct",
+        ]
+        endpoint = "https://openrouter.ai/api/v1/chat/completions"
+
+        for model in models:
+            try:
+                req = urllib.request.Request(
+                    endpoint,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://github.com/zco-hunter",
+                        "X-Title": "ZCO-Hunter",
+                    },
+                    data=json.dumps({
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "response_format": {"type": "json_object"},
+                    }).encode("utf-8"),
+                )
+
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    content = data["choices"][0]["message"]["content"]
+                    parsed = json.loads(content)
+                    raw_notes = str(parsed.get("audit_notes", "")).strip()
+                    final_notes = f"[AI Semantic Auditor] {raw_notes}" if raw_notes else "تم الفحص بواسطة محرك الذكاء الاصطناعي (AI Semantic Auditor)."
+                    return EligibilityAuditResult(
+                        is_eligible=bool(parsed.get("is_eligible", False)),
+                        matched_jurisdiction_track=str(parsed.get("matched_jurisdiction_track", "")),
+                        match_score=int(parsed.get("match_score", 0)),
+                        rejection_reason=str(parsed.get("rejection_reason", "")),
+                        audit_notes=final_notes,
+                    )
+            except Exception as exc:
+                logger.debug("Model %s failed in evaluate_with_ai: %s", model, exc)
+                continue
+
+        return None
+
+    def evaluate_deterministic(self, opp: Dict[str, Any]) -> EligibilityAuditResult:
         text = f"{opp.get('title', '')} {opp.get('raw_description', '')} {opp.get('raw_terms_text', '')}".lower()
         is_inside_my = bool(opp.get("is_inside_malaysia", 0))
         track = opp.get("track_category", "")
