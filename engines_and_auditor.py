@@ -131,9 +131,41 @@ DEFAULT_CANDIDATE_PROFILE: Dict[str, Any] = {
 
 
 STANDARD_FIELD_CATALOG: Dict[str, Dict[str, str]] = {
+    "first_name": {
+        "label_ar": "الاسم الأول (كما في جواز السفر)",
+        "category": "identity",
+    },
+    "last_name": {
+        "label_ar": "اسم العائلة / الكنية (كما في جواز السفر)",
+        "category": "identity",
+    },
+    "gender": {
+        "label_ar": "الجنس (ذكر / أنثى)",
+        "category": "identity",
+    },
     "full_name": {
         "label_ar": "الاسم الكامل (كما في جواز السفر)",
         "category": "identity",
+    },
+    "current_city": {
+        "label_ar": "مدينة الإقامة الحالية",
+        "category": "jurisdiction",
+    },
+    "current_country": {
+        "label_ar": "دولة الإقامة الحالية",
+        "category": "jurisdiction",
+    },
+    "original_city": {
+        "label_ar": "مدينة الإقامة الدائمة / الأصلية",
+        "category": "jurisdiction",
+    },
+    "original_country": {
+        "label_ar": "دولة الإقامة الدائمة / الأصلية",
+        "category": "jurisdiction",
+    },
+    "address_of_original_residence": {
+        "label_ar": "العنوان التفصيلي للإقامة الأصلية / العائلية",
+        "category": "jurisdiction",
     },
     "age": {
         "label_ar": "العمر الحالي",
