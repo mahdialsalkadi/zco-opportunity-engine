@@ -1623,34 +1623,56 @@ class TriJurisdictionEligibilityEngine:
         return False
 
     def _enrich_terms_from_url_if_needed(self, opp: Dict[str, Any]) -> None:
-        apply_url = opp.get("apply_url") or ""
-        if not apply_url or not apply_url.startswith(("http://", "https://")):
-            return
         if "[OFFICIAL PAGE TERMS]" in (opp.get("raw_terms_text") or ""):
             return
         if os.environ.get("PYTEST_CURRENT_TEST"):
             return
 
-        try:
-            req = urllib.request.Request(
-                apply_url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                },
-            )
-            with urllib.request.urlopen(req, timeout=6) as resp:
-                raw_html = resp.read().decode("utf-8", errors="replace")
-                rep = DeepPageAndPdfInspector.inspect_html_content(
-                    html_text=raw_html,
-                    base_url=apply_url,
-                    resolve_linked_pdfs=False,
+        urls_to_try = []
+        for u in [opp.get("source_url"), opp.get("apply_url")]:
+            if u and u.startswith(("http://", "https://")) and u not in urls_to_try:
+                urls_to_try.append(u)
+
+        if not urls_to_try:
+            return
+
+        extracted_text = ""
+        for target_url in urls_to_try:
+            # 1. Prefer Obscura headless browser for full JavaScript SPA rendering and anti-bot bypass
+            try:
+                import obscura_engine
+                if obscura_engine.is_obscura_available():
+                    rendered_md = obscura_engine.fetch_rendered_markdown(target_url, timeout=12)
+                    if rendered_md and len(rendered_md.strip()) > 150:
+                        extracted_text += f"\n\n[OFFICIAL PAGE TERMS - {target_url}]:\n{rendered_md[:4000]}"
+                        continue
+            except Exception as exc:
+                logger.debug("Obscura live fetch failed for %s: %s", target_url, exc)
+
+            # 2. Resilient fallback to urllib
+            try:
+                req = urllib.request.Request(
+                    target_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                    },
                 )
-                if rep.extracted_full_text and len(rep.extracted_full_text.strip()) > 100:
-                    opp["raw_terms_text"] = f"[OFFICIAL PAGE TERMS]:\n{rep.extracted_full_text[:6000]}\n\n[SOURCE SUMMARY]:\n{opp.get('raw_terms_text', '')}"
-                if rep.required_vault_keys:
-                    opp["required_form_fields_json"] = json.dumps(rep.required_vault_keys, ensure_ascii=False)
-        except Exception as exc:
-            logger.debug("Enrich terms from %s failed: %s", apply_url, exc)
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    raw_html = resp.read().decode("utf-8", errors="replace")
+                    rep = DeepPageAndPdfInspector.inspect_html_content(
+                        html_text=raw_html,
+                        base_url=target_url,
+                        resolve_linked_pdfs=False,
+                    )
+                    if rep.extracted_full_text and len(rep.extracted_full_text.strip()) > 100:
+                        extracted_text += f"\n\n[OFFICIAL PAGE TERMS - {target_url}]:\n{rep.extracted_full_text[:4000]}"
+                    if rep.required_vault_keys and not opp.get("required_form_fields_json"):
+                        opp["required_form_fields_json"] = json.dumps(rep.required_vault_keys, ensure_ascii=False)
+            except Exception as exc:
+                logger.debug("Urllib live fetch failed for %s: %s", target_url, exc)
+
+        if extracted_text:
+            opp["raw_terms_text"] = f"[OFFICIAL PAGE TERMS]:\n{extracted_text.strip()}\n\n[SOURCE SUMMARY]:\n{opp.get('raw_terms_text', '')}"
 
     def evaluate(self, opp: Dict[str, Any]) -> EligibilityAuditResult:
         """
@@ -2683,28 +2705,6 @@ def audit_opportunity_record(
             opp["raw_terms_text"] = f"{opp.get('raw_terms_text', '')}\n{rep.extracted_full_text}\n{combined_pdf}"
             if rep.required_vault_keys:
                 opp["required_form_fields_json"] = json.dumps(rep.required_vault_keys, ensure_ascii=False)
-    elif apply_url.startswith(("http://", "https://")) and not os.environ.get("PYTEST_CURRENT_TEST"):
-        try:
-            req = urllib.request.Request(
-                apply_url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                },
-            )
-            with urllib.request.urlopen(req, timeout=6) as resp:
-                raw_html = resp.read().decode("utf-8", errors="replace")
-                rep = DeepPageAndPdfInspector.inspect_html_content(
-                    html_text=raw_html,
-                    base_url=apply_url,
-                    resolve_linked_pdfs=False,
-                )
-                if rep.extracted_full_text and len(rep.extracted_full_text.strip()) > 100:
-                    opp["raw_terms_text"] = f"[OFFICIAL PAGE TERMS]:\n{rep.extracted_full_text[:6000]}\n\n[SOURCE SUMMARY]:\n{opp.get('raw_terms_text', '')}"
-                if rep.required_vault_keys:
-                    opp["required_form_fields_json"] = json.dumps(rep.required_vault_keys, ensure_ascii=False)
-        except Exception as exc:
-            logger.debug("Live fetch of official page %s failed: %s", apply_url, exc)
-
     gatekeeper = ZeroCostGatekeeper()
     eligibility_engine = TriJurisdictionEligibilityEngine(profile=profile)
     return gatekeeper.audit(opp), eligibility_engine.evaluate(opp)

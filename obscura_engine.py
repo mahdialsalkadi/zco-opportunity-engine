@@ -535,34 +535,87 @@ def build_form_automation_js(
         }}
     }}
 
-    // --- STEP 3: Radio Buttons (Gender, Degree Level, Single Choice) ---
-    const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
-    for (const r of radios) {{
-        const rCtx = resolveContext(r);
-        const rVal = (r.value || '').toLowerCase();
-        
-        // Gender match: Male
-        if ((rCtx.includes('gender') || rCtx.includes('sex') || rCtx.includes('الجنس')) ||
-            (rVal === 'male' || rCtx.includes('male') && !rCtx.includes('female'))) {{
-            if ((payload.gender || '').toLowerCase() === 'male' && (rVal === 'male' || (rCtx.includes('male') && !rCtx.includes('female')))) {{
-                if (!r.checked) {{
-                    r.click();
-                    r.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    filledCount++;
-                    filledLog.push('radio -> Gender Male');
+    // --- STEP 3: Universal Choice & Radio Matching (Gender, Degree Level, Single Choice) ---
+    const getChoiceQuestionContext = (choiceEl) => {{
+        const qContainer = choiceEl.closest('[data-automation-id="questionItem"], [role="listitem"], fieldset, [role="radiogroup"], .office-form-question, .freebirdFormviewerViewNumberedItemContainer') || choiceEl.parentElement;
+        if (!qContainer) return '';
+        const titleEl = qContainer.querySelector('[data-automation-id="questionTitle"], legend, label, [role="heading"], .freebirdFormviewerViewItemsItemItemTitle');
+        return (titleEl ? titleEl.innerText : qContainer.innerText.slice(0, 150)).toLowerCase();
+    }};
+
+    const getChoiceOptionLabel = (choiceEl) => {{
+        const span = choiceEl.hasAttribute && choiceEl.hasAttribute('data-automation-value') ? choiceEl : (choiceEl.querySelector ? choiceEl.querySelector('[data-automation-value]') : null);
+        if (span && span.getAttribute('data-automation-value')) return span.getAttribute('data-automation-value').trim().toLowerCase();
+        const lbl = choiceEl.tagName === 'LABEL' ? choiceEl : (choiceEl.closest ? choiceEl.closest('label') : null) || (choiceEl.querySelector ? choiceEl.querySelector('label') : null);
+        if (lbl) {{
+            const textSpan = lbl.querySelector('.text-format-content, span:not([data-automation-id="radio"])');
+            if (textSpan && textSpan.innerText.trim()) return textSpan.innerText.trim().toLowerCase();
+            if (lbl.innerText.trim()) return lbl.innerText.trim().toLowerCase();
+        }}
+        return (choiceEl.value || choiceEl.innerText || (choiceEl.getAttribute ? choiceEl.getAttribute('aria-label') : '') || '').trim().toLowerCase();
+    }};
+
+    const choiceItems = Array.from(document.querySelectorAll('[data-automation-id="choiceItem"], [role="radio"], input[type="radio"]'));
+    const handledChoices = new Set();
+    for (const c of choiceItems) {{
+        if (c.tagName === 'INPUT' && c.closest('[data-automation-id="choiceItem"]')) continue;
+        const qCtx = getChoiceQuestionContext(c);
+        const optLabel = getChoiceOptionLabel(c);
+        const qKey = qCtx.slice(0, 50);
+
+        if (handledChoices.has(qKey)) continue;
+
+        let shouldSelect = false;
+        let reason = '';
+
+        // 1. Gender check
+        if ((qCtx.includes('gender') || qCtx.includes('sex') || qCtx.includes('الجنس')) && !qCtx.includes('female only')) {{
+            if ((payload.gender || '').toLowerCase() === 'male') {{
+                if (optLabel === 'male' || optLabel === 'ذكر' || optLabel.startsWith('male')) {{
+                    shouldSelect = true;
+                    reason = 'Gender Male';
                 }}
             }}
         }}
-        // Yes/No confirmation options
-        if (rCtx.includes('confirm') || rCtx.includes('certify') || rCtx.includes('eligible') || rCtx.includes('undergraduate')) {{
-            if (rVal === 'yes' || rCtx.includes('yes') || rCtx.includes('نعم')) {{
-                if (!r.checked) {{
-                    r.click();
-                    r.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    filledCount++;
-                    filledLog.push('radio -> Yes/Confirm');
+        // 2. Degree level / Undergraduate check
+        else if (qCtx.includes('undergraduate') || qCtx.includes('degree level') || qCtx.includes('level of study') || qCtx.includes('المرحلة الجامعية') || qCtx.includes('current status')) {{
+            if (optLabel.includes('undergraduate') || optLabel.includes('bachelor') || optLabel.includes('بكالوريوس') || optLabel.includes('جامعي')) {{
+                shouldSelect = true;
+                reason = 'Degree Level Undergraduate';
+            }}
+        }}
+        // 3. Confirmations & Declarations (Yes/No)
+        else if (qCtx.includes('confirm') || qCtx.includes('certify') || qCtx.includes('eligible') || qCtx.includes('full-time') || qCtx.includes('currently enrolled') || qCtx.includes('أقر') || qCtx.includes('تأكيد')) {{
+            if (optLabel === 'yes' || optLabel === 'نعم' || optLabel === 'true' || optLabel.startsWith('yes')) {{
+                shouldSelect = true;
+                reason = 'Yes/Confirm Choice';
+            }}
+        }}
+
+        if (shouldSelect) {{
+            const targetToClick = c.tagName === 'LABEL' ? c : (c.querySelector('label') || c);
+            const input = c.tagName === 'INPUT' ? c : c.querySelector('input[type="radio"]');
+            
+            targetToClick.scrollIntoView({{ block: 'center' }});
+            ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(evt => {{
+                targetToClick.dispatchEvent(new MouseEvent(evt, {{ bubbles: true, cancelable: true, view: window }}));
+            }});
+            if (input) {{
+                const proto = HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'checked')?.set;
+                if (setter) setter.call(input, true); else input.checked = true;
+                input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                if (input.l && input.l['changefalse']) {{
+                    try {{ input.l['changefalse']({{ currentTarget: input, target: input, type: 'change' }}); }} catch(e) {{}}
                 }}
             }}
+            if (c.getAttribute && c.getAttribute('role') === 'radio') {{
+                c.setAttribute('aria-checked', 'true');
+            }}
+            handledChoices.add(qKey);
+            filledCount++;
+            filledLog.push('choice -> ' + reason + ' (' + optLabel + ')');
         }}
     }}
 
@@ -602,7 +655,24 @@ def build_form_automation_js(
         }}
     }}
 
-    // --- STEP 6: Form Submission / Advancement (Submit or Next) ---
+    // --- STEP 6: Validation Error Inspection Helper ---
+    const getVisibleValidationErrors = () => {{
+        const errorNodes = Array.from(document.querySelectorAll(
+            '[data-automation-id="validationError"], [role="alert"], .validation-error, .error-message, ' +
+            '.freebirdFormviewerViewItemsItemErrorMessage, [aria-invalid="true"]'
+        ));
+        return errorNodes
+            .filter(node => node.offsetHeight > 0 || (node.getClientRects && node.getClientRects().length > 0))
+            .map(node => {{
+                const qParent = node.closest('[data-automation-id="questionItem"], [role="listitem"], fieldset, .office-form-question');
+                const qTitle = qParent ? (qParent.querySelector('[data-automation-id="questionTitle"]') || qParent).innerText.split('\\n')[0].trim() : '';
+                const errText = node.innerText.trim();
+                return qTitle ? `${{qTitle}}: ${{errText}}` : errText;
+            }})
+            .filter(t => t && t.length > 2);
+    }};
+
+    // --- STEP 7: Form Submission / Advancement (Submit or Next) ---
     let clickedSubmit = false;
     let clickedNext = false;
 
@@ -616,6 +686,7 @@ def build_form_automation_js(
         }});
 
         if (submitBtn) {{
+            submitBtn.scrollIntoView({{ block: 'center' }});
             submitBtn.click();
             clickedSubmit = true;
         }} else {{
@@ -625,16 +696,20 @@ def build_form_automation_js(
                 return ['next', 'continue', 'التالي', 'متابعة'].some(w => txt === w || txt.startsWith(w));
             }});
             if (nextBtn) {{
+                nextBtn.scrollIntoView({{ block: 'center' }});
                 nextBtn.click();
                 clickedNext = true;
             }}
         }}
     }}
 
+    const visibleErrors = getVisibleValidationErrors();
+
     return JSON.stringify({{
         filled_count: filledCount,
         clicked_submit: clickedSubmit,
         clicked_next: clickedNext,
+        validation_errors: visibleErrors,
         filled_log: filledLog,
         body_text: document.body ? document.body.innerText.slice(0, 3000) : ''
     }});
@@ -690,6 +765,7 @@ def obscura_fill_and_submit(
     filled_count = 0
     clicked_submit = False
     clicked_next = False
+    validation_errors = []
     body_text = ""
     try:
         raw_eval = out.strip()
@@ -700,9 +776,22 @@ def obscura_fill_and_submit(
         filled_count = int(data.get("filled_count", 0))
         clicked_submit = bool(data.get("clicked_submit", False))
         clicked_next = bool(data.get("clicked_next", False))
+        validation_errors = data.get("validation_errors", []) or []
         body_text = str(data.get("body_text", ""))
     except Exception:
         body_text = out[:2000]
+
+    if validation_errors:
+        return BrowserSubmissionReceipt(
+            status="PAUSED_NEEDS_USER_INPUT",
+            confirmation_reference="",
+            confirmation_page_text=body_text[:1000],
+            pre_submit_screenshot_path="",
+            post_submit_screenshot_path=str(post_shot_path) if post_shot_path.exists() else "",
+            filled_dom_fields_count=filled_count,
+            uploaded_files_count=0,
+            notes=f"تعذر استكمال النموذج لوجود متطلبات غير مكتملة في الاستمارة: {'; '.join(validation_errors[:3])}",
+        )
 
     if filled_count == 0:
         return BrowserSubmissionReceipt(
@@ -724,10 +813,10 @@ def obscura_fill_and_submit(
         notes = f"تمت تعبئة {filled_count} حقلاً وإرسال الاستمارة بنجاح عبر متصفح Obscura. رقم التأكيد: {confirmation_ref}"
     elif clicked_submit:
         status = "SUBMITTED_UNCONFIRMED"
-        notes = f"تمت تعبئة {filled_count} حقلاً والضغط على زر الإرسال عبر Obscura (لم يُعثر على كود تأكيد رسمي في نص الصفحة)."
+        notes = f"تمت تعبئة {filled_count} حقلاً والضغط على زر الإرسال Submit عبر متصفح Obscura (لم يُعثر على كود تأكيد رسمي في نص الصفحة)."
     elif clicked_next:
-        status = "SUBMITTED_UNCONFIRMED"
-        notes = f"تمت تعبئة {filled_count} حقلاً بنجاح والانتقال عبر مراحل الاستمارة عبر زر Next في متصفح Obscura."
+        status = "READY_FOR_REVIEW"
+        notes = f"تمت تعبئة {filled_count} حقلاً بنجاح والانتقال عبر مراحل الاستمارة عبر زر Next في متصفح Obscura دون أخطاء تحقق."
     else:
         status = "READY_FOR_SUBMISSION"
         notes = f"تمت تعبئة {filled_count} حقلاً بنجاح عبر متصفح Obscura وتجهيز الاستمارة بالكامل."
