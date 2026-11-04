@@ -169,6 +169,23 @@ def test_tri_jurisdiction_eligibility_engine():
     assert res_masters.is_eligible is False
     assert "دراسات عليا" in res_masters.rejection_reason
 
+    # Ineligible: Community Solutions Program (Age 27-39, 5 yrs experience, home country residency)
+    opp_csp = {
+        "title": "Community Solutions Program (CSP) 2027",
+        "is_inside_malaysia": 0,
+        "track_category": "OUTDOOR_LEADERSHIP_CAMPS",
+        "raw_description": "A year-long professional leadership development program.",
+        "raw_terms_text": (
+            "You are between the ages of 27 and 39 at the time of application. "
+            "You have at least five years of experience working on community issues. "
+            "You are living and working in your country at the time of application and are not "
+            "residing or working outside your country, including through an academic program."
+        ),
+    }
+    res_csp = engine.evaluate(opp_csp)
+    assert res_csp.is_eligible is False
+    assert "فئة عمرية" in res_csp.rejection_reason or "27-39" in res_csp.rejection_reason
+
 
 def test_tri_jurisdiction_ai_evaluation(monkeypatch):
     from unittest.mock import MagicMock, patch

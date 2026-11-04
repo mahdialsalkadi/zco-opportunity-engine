@@ -16,6 +16,7 @@ from writing_rules import (
     build_motivation_prompt,
     count_words,
     validate_motivation_essay,
+    humanize_text,
 )
 
 WWF_OPP = {
@@ -67,3 +68,22 @@ def test_prompt_contains_fact_and_style_constraints():
     assert "Do not mention Kuwait" in prompt
     assert "Do not use these phrases" in prompt
     assert "180-280" in prompt
+
+
+def test_humanize_text_removes_ai_tells():
+    ai_raw = (
+        "Here is my statement:\n\n"
+        "In today's rapidly evolving world, I am applying for this program. "
+        "The project — developed over six months — was not only efficient but also scalable. "
+        "At its core, it helped users “seamlessly” organize data. I hope this helps!"
+    )
+    humanized = humanize_text(ai_raw)
+
+    assert "Here is my statement" not in humanized
+    assert "In today's rapidly evolving world" not in humanized
+    assert "At its core" not in humanized
+    assert "—" not in humanized
+    assert "“" not in humanized
+    assert "I hope this helps" not in humanized
+    assert "not only" not in humanized.lower()
+    assert "efficient and scalable" in humanized

@@ -36,6 +36,18 @@ BANNED_PHRASES: Tuple[str, ...] = (
     "unique perspective",
     "i am thrilled",
     "i am eager to embark",
+    # Humanizer tells (§1 - §25)
+    "at its core",
+    "the deeper issue",
+    "what really matters",
+    "let that sink in",
+    "that is the real win",
+    "that distinction matters",
+    "stands as a testament",
+    "marking a pivotal moment",
+    "setting the stage for",
+    "evolving landscape",
+    "indelible mark",
 )
 
 SENSITIVE_TERMS: Tuple[str, ...] = (
@@ -287,6 +299,55 @@ def _clean_text(text: str) -> str:
     return "\n\n".join(p for p in paragraphs if p)
 
 
+def humanize_text(text: str) -> str:
+    """
+    Applies the Humanizer skill rules (Wikipedia 'Signs of AI writing') to cleanse
+    prose of robotic AI tells:
+    - Strips chatbot residues and preamble ('Here is...', 'Certainly!').
+    - Removes em dashes (—), en dashes (–), and double hyphens (--), replacing with commas/periods (§8).
+    - Cleans curly quotation marks to straight quotes (§21).
+    - Removes staged run-ups ('Let's dive in', 'In today's rapidly evolving') (§4).
+    - Cleans empty filler words ('delve', 'testament', 'tapestry', 'pivotal') (§12).
+    - Removes artificial contrast formulas ('not only X but also Y') (§1).
+    - Normalizes paragraph spacing and whitespace.
+    """
+    if not text:
+        return ""
+    out = text
+
+    # 1. Strip chatbot preamble & sign-off residues (§22)
+    residue_patterns = [
+        r"(?i)^(?:here is (?:my|the|a) (?:statement|essay|letter|application)[^:\n]*:?\s*)",
+        r"(?i)^(?:certainly!|of course!|sure!|great question!)[^\n]*\n*",
+        r"(?i)\b(?:i hope this helps|let me know if you need anything else|feel free to ask)[.!]*\s*$",
+    ]
+    for pat in residue_patterns:
+        out = re.sub(pat, "", out).strip()
+
+    # 2. Convert curly quotes to straight quotes (§21)
+    out = out.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+
+    # 3. Replace em/en dashes and spaced hyphens with commas (§8)
+    out = re.sub(r"\s*[—–]\s*|\s+--\s+", ", ", out)
+
+    # 4. Remove staged openers (§4)
+    staged_openers = [
+        r"(?i)\bin today'?s (?:rapidly )?evolving (?:world|landscape),?\s*",
+        r"(?i)\blet'?s (?:dive in|explore|break this down)[^.!\n]*[.!\n]\s*",
+        r"(?i)\bat its core,?\s*",
+        r"(?i)\bit is worth noting that\s*",
+        r"(?i)\bwhat really matters is\s*",
+    ]
+    for pat in staged_openers:
+        out = re.sub(pat, "", out)
+
+    # 5. Clean 'not only X but also Y' to direct statements (§1)
+    out = re.sub(r"(?i)\bnot only\s+([^,]+?)\s+but also\b", r"\1 and", out)
+    out = re.sub(r"(?i)\bnot only\s+([^,]+?),\s+but\b", r"\1, and", out)
+
+    return _clean_text(out)
+
+
 def find_style_issues(text: str, word_range: Tuple[int, int] = WORD_RANGE) -> List[str]:
     issues: List[str] = []
     words = count_words(text)
@@ -294,6 +355,11 @@ def find_style_issues(text: str, word_range: Tuple[int, int] = WORD_RANGE) -> Li
         issues.append(f"too short: {words} words (minimum {word_range[0]})")
     if words > word_range[1]:
         issues.append(f"too long: {words} words (maximum {word_range[1]})")
+    
+    # Humanizer §8 dash check
+    if any(dash in text for dash in ("—", "–", " -- ")):
+        issues.append("contains em/en dash or double hyphen (Humanizer §8 requires commas or periods)")
+
     lowered = _clean(text).lower()
     for phrase in BANNED_PHRASES:
         if phrase in lowered:
@@ -301,6 +367,7 @@ def find_style_issues(text: str, word_range: Tuple[int, int] = WORD_RANGE) -> Li
     for term in SENSITIVE_TERMS:
         if term in lowered:
             issues.append(f"private or irrelevant term: {term}")
+
     return issues
 
 
@@ -321,6 +388,16 @@ def validate_motivation_essay(
 ) -> Dict[str, Any]:
     issues = find_style_issues(text, word_range=word_range)
     issues.extend(f"unsupported metric: {m}" for m in find_unsupported_metrics(text, profile))
+
+    lowered = (text or "").lower()
+    # Humanizer & Academic Grounding: Ensure academic degree and university are mentioned
+    edu = profile.get("education", {}) if isinstance(profile, dict) else {}
+    degree = _clean(edu.get("degree"))
+    inst = _clean(edu.get("institution"))
+    if inst and ("utm" not in lowered and "universiti teknologi malaysia" not in lowered and inst.lower() not in lowered):
+        issues.append(f"missing academic grounding: institution {inst} not mentioned")
+    if degree and ("artificial intelligence" not in lowered and "computer science" not in lowered and degree.lower() not in lowered):
+        issues.append(f"missing academic grounding: degree {degree} not mentioned")
 
     corpus = f"{_clean(opp.get('title'))} {_clean(opp.get('raw_description'))} {_clean(opp.get('raw_terms_text'))}".lower()
     kuwait_mandated = any(marker in corpus for marker in _KUWAIT_MARKERS)
@@ -376,13 +453,16 @@ def build_motivation_prompt(
         f"{_clean(education.get('academic_year'))}, CGPA {_clean(education.get('cgpa'))}.\n"
         f"- Projects: {projects}\n"
         f"- Experience: {experiences}\n\n"
-        "Rules:\n"
+        "Rules (Humanizer Strict Guidelines):\n"
+        f"- Explicitly state the candidate's degree ({_clean(education.get('degree')) or 'Bachelor of Computer Science (Artificial Intelligence)'}) and institution ({_clean(education.get('institution')) or 'Universiti Teknologi Malaysia'}).\n"
         "- Use one concrete project and one concrete experience. Do not list every project.\n"
         "- Use a number only if it appears in the candidate facts above.\n"
         "- Do not invent awards, jobs, publications, marine experience, teaching experience, or policy experience.\n"
         "- Do not mention Kuwait, GitHub, passport numbers, matric numbers, t-shirt sizes, or age.\n"
         "- Do not use these phrases: " + "; ".join(BANNED_PHRASES) + ".\n"
-        "- Avoid em dashes, three-item rhetorical lists, and generic closing lines.\n"
-        "- Write in plain, specific English. Prefer short sentences. No headings.\n"
+        "- Never use em dashes (—), en dashes (–), or double hyphens (--). Use commas or periods.\n"
+        "- Avoid staged openers ('In today's rapidly evolving world', 'Let's dive in') and dramatic one-line closers.\n"
+        "- Avoid forced triads (three-item lists for rhetorical effect).\n"
+        "- Write in authentic, active, human English. Alternate short and long sentences naturally. No headings or decoration.\n"
         f"- Return only the statement, {word_range[0]}-{word_range[1]} words."
     )

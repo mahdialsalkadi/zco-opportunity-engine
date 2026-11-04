@@ -1925,6 +1925,79 @@ Respond strictly in valid JSON format matching this schema:
                     rejection_reason="الفرصة تتطلب شهادة دراسات عليا (ماجستير/دكتوراه) أو بكالوريوس مكتمل مسبقاً، بينما المتقدم طالب بكالوريوس سنة أولى.",
                 )
 
+        # 3. Age restriction check (Candidate Mohammad Mahdi is 20 years old)
+        candidate_age = int(self.profile.get("candidate", {}).get("age", 20))
+        # 3a. Explicit age range: between X and Y / ages X to Y / aged X-Y
+        age_range_match = (
+            re.search(r"between\s+(?:the\s+)?ages\s+of\s+(\d+)\s+and\s+(\d+)", text)
+            or re.search(r"\bages?\s+(\d+)\s*(?:to|[-–])\s*(\d+)", text)
+            or re.search(r"\baged\s+(\d+)\s*(?:to|[-–])\s*(\d+)", text)
+        )
+        if age_range_match:
+            min_age, max_age = int(age_range_match.group(1)), int(age_range_match.group(2))
+            if candidate_age < min_age or candidate_age > max_age:
+                return EligibilityAuditResult(
+                    is_eligible=False,
+                    matched_jurisdiction_track="",
+                    match_score=0,
+                    rejection_reason=f"الفرصة تشترط فئة عمرية محددة ({min_age}-{max_age} سنة)، بينما عمر المتقدم {candidate_age} سنة.",
+                )
+
+        # 3b. Minimum age check (e.g., at least 22 years of age, 25 or older)
+        min_age_match = (
+            re.search(r"(?:at\s+least|minimum\s+age\s+of)\s+(2[1-9]|[3-9]\d)\s+years", text)
+            or re.search(r"\b(2[1-9]|[3-9]\d)\s+years\s+(?:of\s+age\s+)?or\s+older", text)
+        )
+        if min_age_match:
+            min_req = int(min_age_match.group(1))
+            if candidate_age < min_req:
+                return EligibilityAuditResult(
+                    is_eligible=False,
+                    matched_jurisdiction_track="",
+                    match_score=0,
+                    rejection_reason=f"الفرصة تشترط عمراً لا يقل عن {min_req} سنة، بينما عمر المتقدم {candidate_age} سنة.",
+                )
+
+        # 3c. Senior / Mid-career restriction check
+        if re.search(r"\bmid-career\b|\bsenior\s+professionals?\b|\bestablished\s+leaders?\b", text):
+            if not is_undergrad_friendly and not re.search(r"\byouth\b|\bearly-career\b|\bstudents?\b", text):
+                return EligibilityAuditResult(
+                    is_eligible=False,
+                    matched_jurisdiction_track="",
+                    match_score=0,
+                    rejection_reason="الفرصة مخصصة للمهنيين في منتصف مسيرتهم المهنية (Mid-career)، بينما المتقدم طالب جامعي في بداية مسيرته.",
+                )
+
+        # 4. Professional / Community Experience check (Candidate is 1st-year student with 0-1 yr exp)
+        exp_match = (
+            re.search(r"(?:at\s+least|minimum\s+of|minimum)\s+(five|[2-9]|\d{2,})\s+years(?:\s+of)?(?:\s+\w+){0,3}\s+experience", text)
+            or re.search(r"\b([2-9]|\d{2,})\+?\s+years(?:\s+of)?(?:\s+\w+){0,3}\s+experience", text)
+            or re.search(r"\b(five|six|seven|eight|nine|ten)\s+years(?:\s+of)?(?:\s+\w+){0,3}\s+experience", text)
+        )
+        if exp_match:
+            exp_term = exp_match.group(1)
+            # Exclude if it's explicitly undergraduate research or hackathon
+            if not is_undergrad_friendly:
+                return EligibilityAuditResult(
+                    is_eligible=False,
+                    matched_jurisdiction_track="",
+                    match_score=0,
+                    rejection_reason=f"الفرصة تشترط خبرة عملية طويلة (لا تقل عن {exp_term} سنوات)، بينما المتقدم طالب جامعي في بداية مسيرته.",
+                )
+
+        # 5. Home country physical residency exclusion check (Candidate studies and resides in Malaysia)
+        if (
+            re.search(r"living\s+and\s+working\s+in\s+your\s+(?:home\s+)?country.*?not\s+residing\s+or\s+working\s+outside", text, re.S)
+            or re.search(r"must\s+be\s+currently\s+residing\s+in\s+syria", text)
+            or re.search(r"must\s+reside\s+in\s+your\s+country\s+of\s+citizenship\s+at\s+the\s+time\s+of\s+application", text)
+        ):
+            return EligibilityAuditResult(
+                is_eligible=False,
+                matched_jurisdiction_track="",
+                match_score=0,
+                rejection_reason="الفرصة تشترط الإقامة والعمل داخل البلد الأم حصراً وعدم الإقامة بالخارج للدراسة، بينما المتقدم مقيم في ماليزيا كطالب جامعي.",
+            )
+
         matched_tracks: List[str] = []
 
         if is_inside_my:
@@ -2281,6 +2354,7 @@ class AutonomousApplicantEngine:
             build_motivation_letter,
             build_motivation_prompt,
             validate_motivation_essay,
+            humanize_text,
         )
 
         existing_qa = self.db.get_all_learned_qa()
@@ -2296,35 +2370,68 @@ class AutonomousApplicantEngine:
                 cached_check["issues"],
             )
 
-        # 2. Optional LLM pass. Its output is accepted only if it passes the
-        # same style and fact-grounding checks as the deterministic writer.
+        # 2. Local Ornith 1.5 9B / Gemini pass with Humanizer rules
         essay_text = ""
-        gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-        if gemini_api_key:
-            try:
-                prompt = build_motivation_prompt(opp, profile_data)
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_api_key}"
-                req_data = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
-                req = urllib.request.Request(url, data=req_data, headers={"Content-Type": "application/json"})
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    resp_data = json.loads(resp.read().decode("utf-8"))
-                    candidate_essay = resp_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        prompt = build_motivation_prompt(opp, profile_data)
+
+        # Try local Ornith 1.5 9B on Vulkan GPU first
+        try:
+            ornith_req = urllib.request.Request(
+                "http://127.0.0.1:11434/v1/chat/completions",
+                headers={"Content-Type": "application/json"},
+                data=json.dumps({
+                    "model": "ornith-1.5",
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a professional academic statement writer adhering strictly to Humanizer "
+                                "rules (Wikipedia signs of AI writing cleanup). Avoid robotic AI tells, em dashes, "
+                                "and dramatic filler. Return ONLY the natural statement prose."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 1024,
+                }).encode("utf-8"),
+            )
+            with urllib.request.urlopen(ornith_req, timeout=12) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                candidate_essay = humanize_text(data["choices"][0]["message"]["content"].strip())
                 candidate_check = validate_motivation_essay(candidate_essay, profile_data, opp)
                 if candidate_check["ok"]:
                     essay_text = candidate_essay
-                else:
-                    logger.info(
-                        "Rejected LLM essay for %s: %s",
-                        opp_code,
-                        candidate_check["issues"],
-                    )
-            except Exception as exc:
-                logger.debug("Gemini LLM essay synthesis fallback: %s", exc)
+        except Exception as exc:
+            logger.debug("Local Ornith essay synthesis fallback: %s", exc)
+
+        # If Ornith was offline or output failed checks, try Gemini if key exists
+        if not essay_text:
+            gemini_api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+            if gemini_api_key:
+                try:
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_api_key}"
+                    req_data = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
+                    req = urllib.request.Request(url, data=req_data, headers={"Content-Type": "application/json"})
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        resp_data = json.loads(resp.read().decode("utf-8"))
+                        candidate_essay = humanize_text(resp_data["candidates"][0]["content"]["parts"][0]["text"].strip())
+                    candidate_check = validate_motivation_essay(candidate_essay, profile_data, opp)
+                    if candidate_check["ok"]:
+                        essay_text = candidate_essay
+                    else:
+                        logger.info(
+                            "Rejected LLM essay for %s: %s",
+                            opp_code,
+                            candidate_check["issues"],
+                        )
+                except Exception as exc:
+                    logger.debug("Gemini LLM essay synthesis fallback: %s", exc)
 
         # 3. Deterministic grounded writer. This is the normal path when no
         # API key is configured and the fallback when an LLM output fails.
         if not essay_text:
-            essay_text = build_motivation_letter(opp, profile_data)
+            essay_text = humanize_text(build_motivation_letter(opp, profile_data))
             final_check = validate_motivation_essay(essay_text, profile_data, opp)
             if not final_check["ok"]:
                 logger.warning(
